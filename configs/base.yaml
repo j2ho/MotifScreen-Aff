@@ -1,0 +1,111 @@
+# Base configuration for MotifScreen-Aff training
+model:
+  name: "base_model"
+  dropout_rate: 0.2
+  m: 64  # embedding dimension
+  classification_mode: "former_contrast"
+  ntypes: 6  # num motif types
+  trim_receptor_embedding: true
+  
+  # Grid network parameters
+  grid:
+    num_layers_grid: 2
+    l0_in_features: 102
+    n_heads: 4
+    num_channels: 32
+    num_edge_features: 3
+    l0_out_features: 32
+    ntypes: 6
+    
+  # Ligand network parameters  
+  ligand:
+    num_layers: 2
+    n_heads: 4
+    num_channels: 32
+    l0_in_features: 15
+    l0_out_features: 32
+    num_edge_features: 5
+    
+  # SE3 Transformer parameters
+  se3:
+    num_channels: 32
+    num_degrees: 3
+    div: 4
+    l0_in_features_rec: 32
+    l0_in_features_lig: 15
+    l1_in_features: 0
+    l1_out_features: 0
+    num_edge_features: 5
+    l0_out_features_lig: 64
+    d: 64
+    m: 64
+    c: 64
+    n_trigon_lig_layers: 3
+    n_trigon_key_layers: 3
+
+# Training parameters
+training:
+  lr: 1.0e-4
+  max_epoch: 500
+  debug: false
+  ddp: true
+  silent: false
+  
+# Data parameters
+data:
+  datapath: "/ml/motifnet/features_com2/"
+  train_file: "data/PLmix.60k.screen.txt"
+  valid_file: "data/PLmix.60k.screen.txt"
+  ball_radius: 8.0
+  edgedist: [2.2, 4.5]
+  edgemode: "topk"
+  edgek: [8, 16]
+  randomize: 0.2
+  ntype: 6
+  maxedge: 40000
+  maxnode: 3000
+  drop_H: true
+  max_subset: 5
+  
+# Data loader parameters
+dataloader:
+  batch_size: 1
+  num_workers: 5
+  pin_memory: true
+  shuffle: true  # will be set to false if ddp is true
+  
+# Loss weights
+losses:
+  wGrid: 1.0
+  wTR: 0.2
+  w_reg: 1.0e-10
+  w_contrast: 2.0
+  w_false: 0.2
+  w_spread: 5.0
+  w_screen: 0.0
+  w_screen_contrast: 0.0
+  w_screen_ranking: 0.0
+  w_Dkey: 1.0
+  screenloss: "BCE"
+  struct_loss: "mse"
+  
+# Feature settings
+features:
+  input_features: "base"
+  n_lig_feat: 19
+  n_lig_emb: 4
+  
+# Cross-validation and data augmentation
+cross_validation:
+  load_cross: false
+  cross_eval_struct: false
+  cross_grid: 0.0
+  nonnative_struct_weight: 0.2
+  
+# Other settings
+misc:
+  pert: false
+  randomize_grid: 0.0
+  keyatomf: "keyatom.def.npz"
+  firstshell_as_grid: false
+  use_input_PHcore: false
