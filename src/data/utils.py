@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.spatial
-
-ELEMS = ['Null','H','C','N','O','Cl','F','I','Br','P','S'] #0 index goes to "empty node"
+from .types import ELEMS
 
 def sasa_from_xyz(xyz, elems, probe_radius=1.4, n_samples=50):
 
