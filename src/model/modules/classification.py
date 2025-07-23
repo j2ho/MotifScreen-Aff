@@ -66,7 +66,6 @@ class ClassModule( nn.Module ):
         ## TODO
         # for classification
 
-            
         if self.classification_mode == 'former':
             ## simplified!
             att = self.linear_z1(z).squeeze(-1)
