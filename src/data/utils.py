@@ -84,14 +84,20 @@ def read_mol2(mol2,drop_H=False):
         if read_cont == 1:
 
             idx = words[0]
-            if words[1].startswith('BR'): words[1] = 'Br'
-            if words[1].startswith('Br') or  words[1].startswith('Cl') :
-                elem = words[1][:2]
-            else:
-                elem = words[1][0]
+            # if words[1].startswith('BR'): words[1] = 'Br'
+            # if words[1].startswith('CL'): words[1] = 'Cl'
+            # if words[1].startswith('Br') or  words[1].startswith('Cl') :
+            #     # elem = words[1][:2]
+            #     elem = words[5].split('.')[0]
+            # else:
+            #     elem = words[1][0]
 
-            if elem == 'A' or elem == 'B' :
+            # if elem == 'A' or elem == 'B' :
+            #     elem = words[5].split('.')[0]
+            try:
                 elem = words[5].split('.')[0]
+            except IndexError:
+                elem = words[1][0]  # Fallback to first character of the atom name
 
             if elem not in ELEMS: elem = 'Null'
 
@@ -214,13 +220,15 @@ def read_mol2_batch(mol2, tags_read=None, drop_H=True, tag_only=False):
             name = words[1]
             if name.startswith('BR'):
                 name = 'Br'
-            if name.startswith('Br') or name.startswith('Cl'):
-                elem = name[:2]
-            else:
-                elem = name[0]
-
-            if elem in ['A', 'B']:
+            # same elem logic as in read_mol2
+            try:
                 elem = words[5].split('.')[0]
+            except IndexError:
+                if name.startswith('Br') or name.startswith('Cl'):
+                    elem = name[:2]
+                else:
+                    elem = name[0]
+
             if elem not in ELEMS:
                 elem = 'Null'
 
