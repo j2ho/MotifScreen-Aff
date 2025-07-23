@@ -26,6 +26,7 @@ class GridParams:
 @dataclass
 class LigandParams:
     """Ligand network parameters - corresponds to LigandArgs.params"""
+    model: str = "gat"  # Model type for ligand processing
     dropout_rate: float = 0.1
     num_layers: int = 2
     n_heads: int = 4
@@ -33,11 +34,12 @@ class LigandParams:
     l0_in_features: int = 15
     l0_out_features: int = 32
     num_edge_features: int = 5
+    n_lig_global_in: int = 19  # Number of global ligand input features
+    n_lig_global_out: int = 4  # Number of global ligand embeddings
 
 
 @dataclass
 class TRParams:
-    """TR/SE3 parameters - corresponds to TRArgs.params"""
     dropout_rate: float = 0.1
     num_channels: int = 32
     num_degrees: int = 3
@@ -53,7 +55,14 @@ class TRParams:
     c: int = 64
     n_trigon_lig_layers: int = 3
     n_trigon_key_layers: int = 3
+    shared_trigon: bool = False
+    normalize_Xform: bool = True
+    lig_to_key_attn: bool = True
 
+@dataclass
+class AffModuleParams:
+    """Parameters for the Affinity Module"""
+    classification_mode: str = "former_contrast"  # Mode for classification
 
 @dataclass
 class TrainingConfig:
@@ -71,6 +80,9 @@ class DataConfig:
     datapath: str = "/ml/motifnet/features_com2/"
     train_file: str = "data/PLmix.60k.screen.txt"
     valid_file: str = "data/PLmix.60k.screen.txt"
+    affinityf: Optional[str] = None
+    decoyf: str = "decoys.BL2.npz"  
+    keyatomf: str = "keyatom.def.npz" 
     ball_radius: float = 8.0
     edgedist: List[float] = field(default_factory=lambda: [2.2, 4.5])
     edgemode: str = "topk"
@@ -96,50 +108,38 @@ class DataLoaderConfig:
 class Config:
     """Main configuration class - corresponds to Argument class"""
     # Model name
-    modelname: str = "base_model"
-    
-    # Core parameters
-    dropout_rate: float = 0.2
-    m: int = 64  # embedding dimension
+    modelname: str = "MSK1"
     
     # Parameter groups (using dataclasses instead of dicts)
     params_grid: GridParams = field(default_factory=GridParams)
     params_ligand: LigandParams = field(default_factory=LigandParams)
     params_TR: TRParams = field(default_factory=TRParams)
-    
+    params_Aff: AffModuleParams = field(default_factory=AffModuleParams)
+
     # Main model parameters
-    classification_mode: str = "former_contrast"
-    ntypes: int = 6
+    dropout_rate: float = 0.2
     LR: float = 1.0e-4
-    wTR: float = 0.2
-    wGrid: float = 1.0
-    w_reg: float = 1.0e-10
+
+    struct_loss: str = "mse"
+    w_str: float = 0.2
+    w_cat: float = 1.0
+    w_penalty: float = 1.0e-10
     screenloss: str = "BCE"
     w_contrast: float = 2.0
-    w_false: float = 0.2
     w_spread: float = 5.0
     w_screen: float = 0.0
     w_screen_contrast: float = 0.0
     w_screen_ranking: float = 0.0
     w_Dkey: float = 1.0
-    trim_receptor_embedding: bool = True
+
     max_epoch: int = 500
     debug: bool = False
-    datasetf: Union[str, List[str]] = "data/PLmix.60k.screen.txt"
-    n_lig_feat: int = 19
-    n_lig_emb: int = 4
-    struct_loss: str = "mse"
-    input_features: str = "base"
     pert: bool = False
-    ligand_model: str = "gat"
     load_cross: bool = False
     cross_eval_struct: bool = False
     cross_grid: float = 0.0
     nonnative_struct_weight: float = 0.2
     randomize_grid: float = 0.0
-    shared_trigon: bool = False
-    normalize_Xform: bool = True
-    lig_to_key_attn: bool = True
     keyatomf: str = "keyatom.def.npz"
     firstshell_as_grid: bool = False
     use_input_PHcore: bool = False
@@ -147,7 +147,8 @@ class Config:
     # Training options
     ddp: bool = True
     silent: bool = False
-    
+    load_checkpoint: bool = False
+
     # Data and loader configs
     data: DataConfig = field(default_factory=DataConfig)
     dataloader: DataLoaderConfig = field(default_factory=DataLoaderConfig)
@@ -155,8 +156,6 @@ class Config:
     def __post_init__(self):
         """Post-initialization to handle parameter adjustments"""
         self._sync_dropout_rates()
-        self._sync_embedding_dimensions()
-        self._apply_feature_adjustments()
         self._apply_ddp_adjustments()
 
     def _sync_dropout_rates(self):
@@ -164,37 +163,6 @@ class Config:
         self.params_grid.dropout_rate = self.dropout_rate
         self.params_ligand.dropout_rate = self.dropout_rate
         self.params_TR.dropout_rate = self.dropout_rate
-
-    def _sync_embedding_dimensions(self):
-        """Sync embedding dimensions across parameter groups"""
-        self.params_grid.l0_out_features = self.m
-        self.params_ligand.l0_out_features = self.m
-        self.params_TR.m = self.m
-        self.params_TR.l0_out_features_lig = self.m
-
-    def _apply_feature_adjustments(self):
-        """Apply feature-specific parameter adjustments"""
-        if self.input_features == "base":
-            pass
-        elif self.input_features == "ex1":
-            self.params_ligand.l0_in_features = 18
-            self.params_grid.l0_in_features = 104
-        elif self.input_features == "ex2":
-            self.n_lig_feat = 32
-            self.params_ligand.l0_in_features = 18
-            self.params_grid.l0_in_features = 104
-        elif self.input_features == "graph":
-            self.params_ligand.l0_in_features = 18
-            self.params_grid.l0_in_features = 104
-        elif self.input_features == "graphex":
-            self.params_ligand.l0_in_features = 69
-            self.n_lig_feat = 19 + 128
-            self.n_lig_emb = 8
-            self.params_ligand.num_edge_features = 4
-            self.params_grid.l0_in_features = 104
-        elif self.input_features == "graphfix":
-            self.params_ligand.l0_in_features = 21
-            self.params_grid.l0_in_features = 104
 
     def _apply_ddp_adjustments(self):
         """Apply DDP-specific adjustments"""
@@ -208,11 +176,6 @@ class Config:
         """Set dropout rate across all parameter groups"""
         self.dropout_rate = value
         self._sync_dropout_rates()
-
-    def feattype(self, feat: str):
-        """Set feature type and apply adjustments"""
-        self.input_features = feat
-        self._apply_feature_adjustments()
 
 
 def deep_merge(base_dict: Dict, override_dict: Dict) -> Dict:
@@ -258,18 +221,18 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
     # Extract nested parameter configurations
     grid_params = GridParams(**config_dict.get('model', {}).get('grid', {}))
     ligand_params = LigandParams(**config_dict.get('model', {}).get('ligand', {}))
-    tr_params = TRParams(**config_dict.get('model', {}).get('se3', {}))
-    
+    tr_params = TRParams(**config_dict.get('model', {}).get('TR', {}))
+    aff_params = AffModuleParams(**config_dict.get('model', {}).get('aff', {}))
+
     data_config = DataConfig(**config_dict.get('data', {}))
+    data_misc_config = config_dict.get('misc', {})
     dataloader_config = DataLoaderConfig(**config_dict.get('dataloader', {}))
     
     # Build main config
     main_config = config_dict.get('model', {})
     training_config = config_dict.get('training', {})
     loss_config = config_dict.get('losses', {})
-    feature_config = config_dict.get('features', {})
     cv_config = config_dict.get('cross_validation', {})
-    misc_config = config_dict.get('misc', {})
     
     # Create config with all parameters
     config = Config(
@@ -277,55 +240,46 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
         modelname=main_config.get('name', 'base_model'),
         
         # Core parameters
-        dropout_rate=main_config.get('dropout_rate', 0.2),
-        m=main_config.get('m', 64),
         
         # Parameter groups
         params_grid=grid_params,
         params_ligand=ligand_params,
         params_TR=tr_params,
+        params_Aff=aff_params,
         
         # Main model parameters
-        classification_mode=main_config.get('classification_mode', 'former_contrast'),
-        ntypes=main_config.get('ntypes', 6),
+        dropout_rate=training_config.get('dropout_rate', 0.2),
         LR=training_config.get('lr', 1.0e-4),
-        wTR=loss_config.get('wTR', 0.2),
-        wGrid=loss_config.get('wGrid', 1.0),
-        w_reg=loss_config.get('w_reg', 1.0e-10),
+
+        w_str=loss_config.get('w_str', 0.2),
+        w_cat=loss_config.get('w_cat', 1.0),
+        w_penalty=loss_config.get('w_penalty', 1.0e-10),
         screenloss=loss_config.get('screenloss', 'BCE'),
         w_contrast=loss_config.get('w_contrast', 2.0),
-        w_false=loss_config.get('w_false', 0.2),
         w_spread=loss_config.get('w_spread', 5.0),
         w_screen=loss_config.get('w_screen', 0.0),
         w_screen_contrast=loss_config.get('w_screen_contrast', 0.0),
         w_screen_ranking=loss_config.get('w_screen_ranking', 0.0),
         w_Dkey=loss_config.get('w_Dkey', 1.0),
-        trim_receptor_embedding=main_config.get('trim_receptor_embedding', True),
+
         max_epoch=training_config.get('max_epoch', 500),
         debug=training_config.get('debug', False),
-        datasetf=config_dict.get('data', {}).get('train_file', 'data/PLmix.60k.screen.txt'),
-        n_lig_feat=feature_config.get('n_lig_feat', 19),
-        n_lig_emb=feature_config.get('n_lig_emb', 4),
+
         struct_loss=loss_config.get('struct_loss', 'mse'),
-        input_features=feature_config.get('input_features', 'base'),
-        pert=misc_config.get('pert', False),
-        ligand_model=main_config.get('ligand', {}).get('model_type', 'gat'),
         load_cross=cv_config.get('load_cross', False),
         cross_eval_struct=cv_config.get('cross_eval_struct', False),
         cross_grid=cv_config.get('cross_grid', 0.0),
         nonnative_struct_weight=cv_config.get('nonnative_struct_weight', 0.2),
-        randomize_grid=misc_config.get('randomize_grid', 0.0),
-        shared_trigon=main_config.get('se3', {}).get('shared_trigon', False),
-        normalize_Xform=main_config.get('se3', {}).get('normalize_Xform', True),
-        lig_to_key_attn=main_config.get('se3', {}).get('lig_to_key_attn', True),
-        keyatomf=misc_config.get('keyatomf', 'keyatom.def.npz'),
-        firstshell_as_grid=misc_config.get('firstshell_as_grid', False),
-        use_input_PHcore=misc_config.get('use_input_PHcore', False),
+        randomize_grid=data_misc_config.get('randomize_grid', 0.0),
+        pert=data_misc_config.get('pert', False),
+        firstshell_as_grid=data_misc_config.get('firstshell_as_grid', False),
+        use_input_PHcore=data_misc_config.get('use_input_PHcore', False),
+        
         
         # Training options
         ddp=training_config.get('ddp', True),
         silent=training_config.get('silent', False),
-        
+        load_checkpoint=training_config.get('load_checkpoint', False),
         # Data and loader configs
         data=data_config,
         dataloader=dataloader_config
@@ -397,13 +351,12 @@ def create_common_config() -> Config:
         cross_grid=1.0,
         
         # Loss weights
-        wGrid=0.05,
+        w_cat=0.05,
         w_screen=0.5,
         w_screen_contrast=0.5,
         w_screen_ranking=5.0,
         
         # Feature settings
-        input_features="graph",
         firstshell_as_grid=False,
         
         # Data files

@@ -1,16 +1,11 @@
-# Configuration for graphfix34 model
 model:
   name: "common"
-  dropout_rate: 0.2
-  m: 64
-  classification_mode: "former_contrast"
-  ntypes: 6
-  trim_receptor_embedding: true
+  version: "v1.0"
   
   # Grid network parameters (enhanced)
   grid:
     num_layers_grid: 5
-    l0_in_features: 104  # will be set by graphfix feature type
+    l0_in_features: 102  
     n_heads: 4
     num_channels: 32
     num_edge_features: 3
@@ -19,15 +14,18 @@ model:
     
   # Ligand network parameters (enhanced)
   ligand:
+    model: "gat"  # Model type for ligand processing
     num_layers: 4
-    l0_in_features: 21  # will be set by graphfix feature type
+    l0_in_features: 18
     n_heads: 4
     num_channels: 32
     l0_out_features: 64
     num_edge_features: 5
+    n_lig_global_in: 19
+    n_lig_global_out: 4
     
   # SE3 Transformer parameters (enhanced)
-  se3:
+  TR:
     num_channels: 32
     num_degrees: 3
     div: 4
@@ -42,20 +40,31 @@ model:
     c: 64
     n_trigon_lig_layers: 2
     n_trigon_key_layers: 3
+    shared_trigon: false
+    normalize_Xform: true
+    lig_to_key_attn: true
 
+  aff:
+    classification_mode: "former_contrast"
+    
 # Training parameters
 training:
+  load_checkpoint: false
   lr: 1.0e-4
   max_epoch: 500
   debug: false
   ddp: true
   silent: false
-  
+  dropout_rate: 0.2
+
 # Data parameters
 data:
-  datapath: "/ml/motifnet/features_com2/"
-  train_file: "data/hpark.train.txt"
-  valid_file: "data/hpark.valid.txt"
+  datapath: "/home/j2ho/DB/for_msk/" 
+  train_file: "data/filtered.train.txt"
+  valid_file: "data/new.valid.txt"
+  affinityf: "data/affinity.npz"
+  decoyf: "decoys.BL2.npz"
+  keyatomf: "keyatom.def.npz" 
   ball_radius: 8.0
   edgedist: [2.2, 4.5]
   edgemode: "topk"
@@ -76,11 +85,11 @@ dataloader:
   
 # Loss weights
 losses:
-  wGrid: 0.05
-  wTR: 0.2
+  w_cat: 0.05
+  w_str: 0.2
   w_reg: 1.0e-10
+  w_penalty: 1.0e-10
   w_contrast: 2.0
-  w_false: 0.2
   w_spread: 5.0
   w_screen: 0.5
   w_screen_contrast: 0.5
@@ -89,11 +98,6 @@ losses:
   screenloss: "BCE"
   struct_loss: "mse"
   
-# Feature settings
-features:
-  input_features: "graphfix"
-  n_lig_feat: 19
-  n_lig_emb: 4
   
 # Cross-validation and data augmentation
 cross_validation:
@@ -106,6 +110,5 @@ cross_validation:
 misc:
   pert: true
   randomize_grid: 0.0
-  keyatomf: "keyatom.def.npz"
   firstshell_as_grid: false
   use_input_PHcore: false
