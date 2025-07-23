@@ -224,13 +224,11 @@ def load_data(txt_file, world_size, rank, main_config):
           f"drop_H={training_data_config.processing.drop_H}")
     print(f"Augmentation config: randomize={training_data_config.augmentation.randomize}")
 
-    sample_count = 0
     with open(txt_file, 'r') as f:
         for line in f:
             if line.startswith('#'):
                 continue
 
-            sample_count += 1
             parts = line.strip().split()
 
             target = parts[0]
@@ -244,11 +242,6 @@ def load_data(txt_file, world_size, rank, main_config):
 
             targets.append(target)
             ligands.append((active_ligand, mol2_file_type))
-
-            # Limit for debugging
-            if main_config.debug:
-                if sample_count == 5:
-                    break
 
     print(f"Loaded {len(targets)} samples from {txt_file}")
 
