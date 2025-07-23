@@ -72,6 +72,7 @@ class TrainingConfig:
     debug: bool = False
     ddp: bool = True
     silent: bool = False
+    accumulation_steps: int = 1
 
 
 @dataclass
@@ -108,7 +109,8 @@ class DataLoaderConfig:
 class Config:
     """Main configuration class - corresponds to Argument class"""
     # Model name
-    modelname: str = "MSK1"
+    modelname: str = "MSK"
+    version: str = "v1.0"
     
     # Parameter groups (using dataclasses instead of dicts)
     params_grid: GridParams = field(default_factory=GridParams)
@@ -132,19 +134,19 @@ class Config:
     w_screen_ranking: float = 0.0
     w_Dkey: float = 1.0
 
-    max_epoch: int = 500
-    debug: bool = False
     pert: bool = False
     load_cross: bool = False
     cross_eval_struct: bool = False
     cross_grid: float = 0.0
     nonnative_struct_weight: float = 0.2
     randomize_grid: float = 0.0
-    keyatomf: str = "keyatom.def.npz"
     firstshell_as_grid: bool = False
     use_input_PHcore: bool = False
     
     # Training options
+    max_epoch: int = 500
+    debug: bool = False
+    accumulation_steps: int = 1
     ddp: bool = True
     silent: bool = False
     load_checkpoint: bool = False
@@ -225,21 +227,20 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
     aff_params = AffModuleParams(**config_dict.get('model', {}).get('aff', {}))
 
     data_config = DataConfig(**config_dict.get('data', {}))
-    data_misc_config = config_dict.get('misc', {})
     dataloader_config = DataLoaderConfig(**config_dict.get('dataloader', {}))
+    data_misc_config = config_dict.get('misc', {})
+    cv_config = config_dict.get('cross_validation', {})
     
     # Build main config
     main_config = config_dict.get('model', {})
     training_config = config_dict.get('training', {})
     loss_config = config_dict.get('losses', {})
-    cv_config = config_dict.get('cross_validation', {})
     
     # Create config with all parameters
     config = Config(
         # Model name
-        modelname=main_config.get('name', 'base_model'),
-        
-        # Core parameters
+        version=main_config.get('version', 'v1.0'),
+        modelname=main_config.get('name', 'MSK'),
         
         # Parameter groups
         params_grid=grid_params,
@@ -249,8 +250,8 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
         
         # Main model parameters
         dropout_rate=training_config.get('dropout_rate', 0.2),
-        LR=training_config.get('lr', 1.0e-4),
 
+        struct_loss=loss_config.get('struct_loss', 'mse'),
         w_str=loss_config.get('w_str', 0.2),
         w_cat=loss_config.get('w_cat', 1.0),
         w_penalty=loss_config.get('w_penalty', 1.0e-10),
@@ -262,10 +263,16 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
         w_screen_ranking=loss_config.get('w_screen_ranking', 0.0),
         w_Dkey=loss_config.get('w_Dkey', 1.0),
 
+        # Training 
+        LR=training_config.get('lr', 1.0e-4),
         max_epoch=training_config.get('max_epoch', 500),
         debug=training_config.get('debug', False),
+        accumulation_steps=training_config.get('accumulation_steps', 1),
 
-        struct_loss=loss_config.get('struct_loss', 'mse'),
+        # Data and loader configs
+        data=data_config,
+        dataloader=dataloader_config,
+        # Dataset configurations other than data/dataloader
         load_cross=cv_config.get('load_cross', False),
         cross_eval_struct=cv_config.get('cross_eval_struct', False),
         cross_grid=cv_config.get('cross_grid', 0.0),
@@ -275,14 +282,10 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
         firstshell_as_grid=data_misc_config.get('firstshell_as_grid', False),
         use_input_PHcore=data_misc_config.get('use_input_PHcore', False),
         
-        
         # Training options
         ddp=training_config.get('ddp', True),
         silent=training_config.get('silent', False),
-        load_checkpoint=training_config.get('load_checkpoint', False),
-        # Data and loader configs
-        data=data_config,
-        dataloader=dataloader_config
+        load_checkpoint=training_config.get('load_checkpoint', False)
     )
     
     # Handle datasetf as list for train/valid split
@@ -313,54 +316,3 @@ def load_config_with_base(config_name: str, configs_dir: str = "configs") -> Con
         str(base_config_path) if base_config_path.exists() else None
     )
 
-
-# Legacy compatibility functions
-def create_common_config() -> Config:
-    """Create common MSK config similar to args.py"""
-    config = Config(
-        modelname="graphfix34",
-        dropout_rate=0.2,
-        m=64,
-        
-        # Enhanced architecture
-        params_grid=GridParams(
-            num_layers_grid=5,
-            l0_in_features=104,
-            dropout_rate=0.2,
-            l0_out_features=64
-        ),
-        params_ligand=LigandParams(
-            num_layers=4,
-            l0_in_features=21,
-            dropout_rate=0.2,
-            l0_out_features=64
-        ),
-        params_TR=TRParams(
-            num_layers_lig=3,
-            n_trigon_lig_layers=2,
-            n_trigon_key_layers=3,
-            dropout_rate=0.2,
-            m=64,
-            l0_out_features_lig=64
-        ),
-        
-        # Data augmentation
-        pert=True,
-        load_cross=True,
-        cross_eval_struct=True,
-        cross_grid=1.0,
-        
-        # Loss weights
-        w_cat=0.05,
-        w_screen=0.5,
-        w_screen_contrast=0.5,
-        w_screen_ranking=5.0,
-        
-        # Feature settings
-        firstshell_as_grid=False,
-        
-        # Data files
-        datasetf=['data/common_up.train.txt', 'data/common_up.valid.txt']
-    )
-    
-    return config

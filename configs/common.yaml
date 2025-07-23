@@ -1,5 +1,5 @@
 model:
-  name: "common"
+  name: "msk"
   version: "v1.0"
   
   # Grid network parameters (enhanced)
@@ -52,6 +52,7 @@ training:
   load_checkpoint: false
   lr: 1.0e-4
   max_epoch: 500
+  accumulation_steps: 2
   debug: false
   ddp: true
   silent: false
