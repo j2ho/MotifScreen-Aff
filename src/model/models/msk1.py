@@ -84,7 +84,7 @@ class EndtoEndModel(nn.Module):
         
         # 1-1) trim to grid part of Grec
         Ggrid = Grec.subgraph( grididx )
-        NullArgs = (None, None, None, None, None)
+        NullArgs = (None, None, None, None, None, None) # for return
 
         if (Ggrid.batch_num_nodes()==0).any():
             return NullArgs
@@ -192,4 +192,4 @@ class EndtoEndModel(nn.Module):
         aff = self.class_module( z, h_grid_batched, h_key_batched,
                                  lig_rep=h_lig_global, w_mask=key_mask )
         
-        return Ykey_s, D_key, z_norm, cs, aff
+        return Ykey_s, D_key, z_norm, cs, aff, None
