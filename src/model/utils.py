@@ -94,6 +94,6 @@ def get_pair_dis_one_hot(d, bin_size=2, bin_min=-1, bin_max=30, num_classes=32):
 
 def masked_softmax(x, mask, **kwargs):
     x_masked = x.clone()
-    x_masked[mask == 0] = -1.0e10 #-float("inf")
+    x_masked[mask == 0] = -1.0e4 #-1.0e10 #-float("inf")
 
     return torch.softmax(x_masked, **kwargs)
