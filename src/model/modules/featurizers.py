@@ -15,7 +15,8 @@ class Grid_SE3(nn.Module):
                  l1_in_features=0,
                  l1_out_features=0,
                  num_edge_features=32, ntypes=15,
-                 dropout_rate=0.1 ):
+                 dropout_rate=0.1,
+                 **kwargs):
 
         super().__init__()
 
@@ -58,7 +59,8 @@ class Grid_SE3(nn.Module):
             c = layer(hs0)
             cs.append(c) # Nx2
         cs = torch.stack(cs,dim=0) #ntype x N x 2
-        cs = cs.T.squeeze(0)
+        # cs = cs.T.squeeze(0)
+        cs = cs.permute(1, 0, 2).squeeze(2)  # N x ntypes
 
         return hs0, cs
 
@@ -75,7 +77,8 @@ class Ligand_SE3(nn.Module):
                  l1_out_features=0,
                  num_edge_features=5, #(bondtype-1hot x4, d) -- ligand only
                  dropout_rate=0.1,
-                 bias=True):
+                 bias=True,
+                 **kwargs):
         super().__init__()
 
         self.l1_in_features = l1_in_features
@@ -116,7 +119,8 @@ class Ligand_GAT(torch.nn.Module):
                  num_channels,
                  add_skip_connection=True,
                  bias=True,
-                 dropout_rate=0.1):
+                 dropout_rate=0.1,
+                 **kwargs):
 
         super().__init__()
 
