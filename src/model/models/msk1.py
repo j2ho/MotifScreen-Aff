@@ -4,12 +4,12 @@ import sys
 import torch
 import torch.nn as nn
 
-from src.model.modules.modules import StructModule, LigandModule, XformModule, DistanceModule 
+from src.model.modules.modules import StructModule, LigandModule, XformModule, DistanceModule
 from src.model.modules.classification import ClassModule
 from src.model.modules.trigon import TrigonModule
-from src.model.modules.featurizers import Grid_SE3, Ligand_SE3, Ligand_GAT 
+from src.model.modules.featurizers import Grid_SE3, Ligand_SE3, Ligand_GAT
 from src.model.utils import to_dense_batch, make_batch_vec, get_pair_dis_one_hot, masked_softmax
-    
+
 class EndtoEndModel(nn.Module):
     """SE(3) equivariant GCN with attention"""
     def __init__(self, args):
@@ -19,15 +19,15 @@ class EndtoEndModel(nn.Module):
 
         self.lig_to_key_attn = args.params_TR.lig_to_key_attn
         self.shared_trigon = args.params_TR.shared_trigon
-        
-        m = args.params_TR.m            
+
+        m = args.params_TR.m
         c = args.params_TR.c
         self.d = args.params_TR.c
         dropout_rate = args.params_TR.dropout_rate
 
         ## 1) Grid/Ligand featurizer
         self.GridFeaturizer = Grid_SE3( **args.params_grid.__dict__ )
-            
+
         if args.params_ligand.model == 'se3':
             self.LigandFeaturizer = Ligand_SE3( **args.params_ligand.__dict__ )
         elif args.params_ligand.model == 'gat':
@@ -39,7 +39,7 @@ class EndtoEndModel(nn.Module):
         ## 2) Trigon-attn module
         self.trigon_lig = TrigonModule( args.params_TR.n_trigon_lig_layers,
                                         m, c, dropout_rate )
-        
+
 
         ## 3) Heads
         self.class_module = ClassModule( m, c,
@@ -60,10 +60,10 @@ class EndtoEndModel(nn.Module):
         if self.shared_trigon:
             trigon_key_layer = TrigonModule(1, m, c, dropout_rate)
             self.trigon_key_layers = nn.ModuleList([ trigon_key_layer for _ in range(Nlayers) ])
-            
+
         else:
             self.trigon_key_layers = nn.ModuleList([
-                TrigonModule(1, m, c, dropout_rate) for _ in range(Nlayers)]) 
+                TrigonModule(1, m, c, dropout_rate) for _ in range(Nlayers)])
         self.XformKeys = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
         self.XformGrids = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
 
@@ -81,7 +81,7 @@ class EndtoEndModel(nn.Module):
 
         h_grid = torch.matmul(gridmap, h_rec) # grid part
         # print(f"DEBUG: h_grid shape: {h_grid.shape if h_grid is not None else 'None'}")
-        
+
         # 1-1) trim to grid part of Grec
         Ggrid = Grec.subgraph( grididx )
         NullArgs = (None, None, None, None, None, None) # for return
@@ -90,8 +90,6 @@ class EndtoEndModel(nn.Module):
             return NullArgs
 
         Ykey_s, z_norm, aff = None, None, None
-        if Glig is None: # if no ligand info provided
-            return NullArgs
 
         # 2) ligand embedding
         try:
@@ -142,19 +140,19 @@ class EndtoEndModel(nn.Module):
         # trim down to key after trigon
         # key_idx: B x K x M
         key_x_batched = torch.einsum('bik,bji->bjk', lig_x_batched, key_idx)
-        
+
         h_key_batched = torch.einsum('bkj,bjd->bkd',key_idx,h_lig_batched)
 
         if self.lig_to_key_attn:
             # key: h_key, query: h_lig
             A = torch.einsum('bkd,bjd->bkj', h_key_batched, h_lig_batched)
             A = masked_softmax( A, lig_to_key_mask, dim=2 ) # softmax over N
-            
+
             h_key_batched = h_key_batched + torch.einsum('bkj,bjd->bkd', A, h_lig_batched )
             h_key_batched = nn.functional.layer_norm(h_key_batched, h_key_batched.shape)
-        
+
         D_key1  = get_pair_dis_one_hot(key_x_batched, bin_size=0.25, bin_min=-0.1, bin_max=15.75, num_classes=self.d).float()
-        
+
         # vars up to here
         z = torch.einsum( 'bkj,bijd->bikd', key_idx, z)
 
@@ -166,12 +164,12 @@ class EndtoEndModel(nn.Module):
         #TODO
         h_grid_batched = h_grid_batched.repeat(h_key_batched.shape[0],1,1)
         for trigon,xformK,xformG in zip(self.trigon_key_layers,self.XformKeys,self.XformGrids):
-            
+
             # move from below to here so that h shares embedding w/ structure...
             # would it make difference?
             # update key/grid features using learned attention
             D_key = self.transform_distance( h_key_batched )
-            
+
             h_key_batched  = xformK( h_key_batched, h_grid_batched, z, z_mask, dim=2 ) # key/query/attn
             h_grid_batched = xformG( h_grid_batched, h_key_batched, z, z_mask, dim=1 ) # key/query/attn
             # update z
@@ -191,5 +189,5 @@ class EndtoEndModel(nn.Module):
         # 2-2) screening module
         aff = self.class_module( z, h_grid_batched, h_key_batched,
                                  lig_rep=h_lig_global, w_mask=key_mask )
-        
+
         return Ykey_s, D_key, z_norm, cs, aff, None
