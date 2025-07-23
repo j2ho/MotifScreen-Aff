@@ -795,8 +795,6 @@ def main():
     if 'MASTER_PORT' not in os.environ:
         os.environ['MASTER_PORT'] = '12346'
 
-    os.system(f"touch GPU_{world_size}")
-
     if config.ddp:
         mp.spawn(train_model, args=(world_size, config), nprocs=world_size, join=True)
     else:
