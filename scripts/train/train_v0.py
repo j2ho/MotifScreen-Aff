@@ -1,4 +1,3 @@
-# train.py
 #!/usr/bin/env python
 """
 Clean training script for MotifScreen-Aff using grouped parameter configuration.
@@ -19,54 +18,110 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# Import only TrainingDataSet from your data module
-from src.data.dataset import TrainingDataSet, collate # Removed TrainingConfig, DataPaths, etc.
+from src.data.training_dataset import TrainingDataSet, TrainingConfig, DataPaths, GraphConfig, DataProcessing, DataAugmentation, CrossValidation, collate
+# from src.data.dataset_debug import DebugTrainingDataSet as TrainingDataSet
 from src.model.models.msk1 import EndtoEndModel as MSK_1
 from src.model.models.msk_v2 import EndtoEndModel as MSK_2
 
 from scripts.train.utils import count_parameters, to_cuda, calc_AUC
 import src.model.loss.losses as Loss
-from configs.config_loader import load_config, load_config_with_base, Config # Import your canonical Config class
+from configs.config import load_config_with_base
 
 import warnings
 warnings.filterwarnings("ignore", message="sourceTensor.clone")
 
 import wandb
 
-def load_params(rank, config: Config): # Type hint for config is now your main Config
+
+def create_training_config(config) -> TrainingConfig:
+    paths = DataPaths(
+        datapath=config.data.datapath,
+        keyatomf=config.data.keyatomf,
+        affinityf=config.data.affinityf,
+        decoyf=config.data.decoyf,
+        crossreceptorf=config.data.crossreceptorf
+    )
+
+    graph = GraphConfig(
+        edgemode=config.data.edgemode,
+        edgek=tuple(config.data.edgek),
+        edgedist=tuple(config.data.edgedist),
+        maxedge=config.data.maxedge,
+        maxnode=config.data.maxnode,
+        ball_radius=config.data.ball_radius,
+        firstshell_as_grid=config.firstshell_as_grid
+    )
+
+    processing = DataProcessing(
+        ntype=config.data.ntype,
+        max_subset=config.data.max_subset,
+        drop_H=config.data.drop_H,
+        store_memory=False  # Could be configurable
+    )
+
+    augmentation = DataAugmentation(
+        randomize=config.data.randomize,
+        randomize_grid=config.randomize_grid,  # Could be configurable
+        pert=config.pert           # Could be configurable
+    )
+
+    cross_validation = CrossValidation(
+        load_cross=config.load_cross,
+        cross_eval_struct=config.cross_eval_struct,
+        cross_grid=config.cross_grid,
+        nonnative_struct_weight=config.nonnative_struct_weight
+    )
+
+    return TrainingConfig(
+        paths=paths,
+        graph=graph,
+        processing=processing,
+        augmentation=augmentation,
+        cross_validation=cross_validation,
+        mode='train',
+        debug=config.debug
+    )
+
+
+def load_params(rank, config):
     """Load model, optimizer, and training state"""
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
+    # Create model
     if config.version == "v1.0":
-        if not config.training.silent:
+        if not config.silent:
             print("Loading MSK_1 model")
         model = MSK_1(config)
     elif config.version == "v2.0":
-        if not config.training.silent:
+        if not config.silent:
             print("Loading MSK_2 model")
         model = MSK_2(config)
     model.to(device)
 
+    # Initialize loss tracking
     train_loss_empty = {
-        "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "total": [],
+        "CatP": [], "CatN": [], "CatCont": [],
+        "NormPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
     valid_loss_empty = {
-        "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "total": [],
+        "CatP": [], "CatN": [], "CatCont": [],
+        "NormPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
     epoch = 0
 
-    # Access learning rate via config.training.lr
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.lr)
+    # Create optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
 
-    # Checkpoint path uses config.modelname and config.version
+    # Load checkpoint if it exists
     checkpoint_path = join("models", f"{config.modelname}{config.version}", "model.pkl")
-    # Access load_checkpoint via config.training.load_checkpoint
-    if os.path.exists(checkpoint_path) and config.training.load_checkpoint:
-        if not config.training.silent:
+    if os.path.exists(checkpoint_path) and config.load_checkpoint:
+        if not config.silent:
             print("Loading a checkpoint")
         checkpoint = torch.load(checkpoint_path, map_location=device)
 
@@ -97,12 +152,16 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
             else:
                 nexist += 1
 
+        # if rank == 0:
+        #     print("params", nnew, nexist)
+
         model.load_state_dict(trained_dict, strict=False)
 
         epoch = checkpoint["epoch"] + 1
         train_loss = checkpoint["train_loss"]
         valid_loss = checkpoint["valid_loss"]
 
+        # Ensure all loss keys exist
         for key in train_loss_empty:
             if key not in train_loss:
                 train_loss[key] = []
@@ -110,25 +169,32 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
             if key not in valid_loss:
                 valid_loss[key] = []
 
-        if not config.training.silent:
+        if not config.silent:
             print("Restarting at epoch", epoch)
 
     else:
-        if not config.training.silent:
+        if not config.silent:
             print("Training a new model")
         train_loss = train_loss_empty
         valid_loss = valid_loss_empty
 
+        # Create model directory
         model_dir = join("models", f"{config.modelname}{config.version}")
         if not isdir(model_dir):
-            if not config.training.silent:
+            if not config.silent:
                 print("Creating a new dir at", model_dir)
             os.makedirs(model_dir, exist_ok=True)
 
+    # Re-initialize classification layers
     if epoch == 0:
         for i, (name, layer) in enumerate(model.named_modules()):
+            # if hasattr(layer, 'weight') and layer.weight is not None:
+            #     print(name, layer.weight.data.numel())
+
             if isinstance(layer, torch.nn.Linear) and \
                ("class" in name or 'Xform' in name):
+                # if rank == 0:
+                #     print("reweight", name)
                 layer.weight.data *= 0.1
 
     if rank == 0:
@@ -138,9 +204,12 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
     return model, optimizer, epoch, train_loss, valid_loss
 
 
-def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for config is now your main Config
+def load_data(txt_file, world_size, rank, main_config):
     """Load dataset using grouped configuration"""
     from torch.utils import data
+
+    # Create grouped training configuration
+    training_data_config = create_training_config(main_config)
 
     # Parse training data file
     targets = []
@@ -148,6 +217,14 @@ def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for 
     weights = {}
 
     print(f"Loading training data from: {txt_file}")
+    print(f"Graph config: edgemode={training_data_config.graph.edgemode}, "
+          f"edgek={training_data_config.graph.edgek}, "
+          f"ball_radius={training_data_config.graph.ball_radius}")
+    print(f"Processing config: ntype={training_data_config.processing.ntype}, "
+          f"max_subset={training_data_config.processing.max_subset}, "
+          f"drop_H={training_data_config.processing.drop_H}")
+    print(f"Augmentation config: randomize={training_data_config.augmentation.randomize}")
+
     with open(txt_file, 'r') as f:
         for line in f:
             if line.startswith('#'):
@@ -169,14 +246,14 @@ def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for 
 
     print(f"Loaded {len(targets)} samples from {txt_file}")
 
-    # Pass the main config object directly
+    # Create dataset with grouped configuration
     dataset = TrainingDataSet(
-        targets=targets, # 'targets' and 'ligands' need to be defined outside this snippet's scope
-        ligands=ligands, # Same for 'ligands'
-        config=main_config # Pass the entire main config object
+        targets=targets,
+        ligands=ligands,
+        config=training_data_config
     )
 
-    # Dataloader parameters now come from main_config.dataloader
+    # Create dataloader with standard parameters
     dataloader_params = {
         'shuffle': main_config.dataloader.shuffle,
         'num_workers': main_config.dataloader.num_workers,
@@ -185,29 +262,29 @@ def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for 
         'batch_size': main_config.dataloader.batch_size
     }
 
-    # DDP logic uses main_config.training.ddp
-    if main_config.training.ddp:
+    if main_config.ddp:
         sampler = data.distributed.DistributedSampler(dataset, num_replicas=world_size, rank=rank)
         dataloader = data.DataLoader(dataset, sampler=sampler, **dataloader_params)
     else:
         dataloader = data.DataLoader(dataset, **dataloader_params)
 
-    return dataloader, weights # 'weights' needs to be defined outside this snippet's scope
+    return dataloader, weights
 
 
-def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Config, weights, global_step=0):
+def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config, weights, global_step=0):
     """Train for one epoch"""
     temp_loss = {
-        "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "total": [],
+        "CatP": [], "CatN": [], "CatCont": [],
+        "NormPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
 
     b_count, e_count = 0, 0
-    # Access accumulation_steps from config.training
-    accum = config.training.accumulation_steps
-    if config.training.debug: # Access debug from config.training
-        accum = 1
+    accum = config.accumulation_steps
+    if config.debug:
+        accum = 1  # For debugging, use single step accumulation
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
     Pt = {'chembl': [], 'biolip': [], 'pdbbind': []}
@@ -224,11 +301,13 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
             e_count += 1
             continue
 
-        with torch.cuda.amp.autocast(config.training.amp):
+        with torch.cuda.amp.autocast(enabled=False):
+            # Use no_sync only if model has it (DDP models), otherwise use nullcontext
             sync_context = model.no_sync() if hasattr(model, 'no_sync') else contextlib.nullcontext()
             with sync_context:
                 t0 = time.time()
 
+                # Move inputs to device
                 Glig = to_cuda(Glig, device)
                 keyxyz = to_cuda(keyxyz, device)
                 keyidx = to_cuda(keyidx, device)
@@ -241,7 +320,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 grid = info['grid'].to(device)
                 eval_struct = info['eval_struct'][0]
                 grididx = grididx.to(device)
-
+                # Forward pass
                 t1 = time.time()
                 keyxyz_pred, key_pairdist_pred, rec_key_z, motif_pred, bind_pred, absaff_pred = model(
                     Grec, Glig, keyidx, grididx,
@@ -252,6 +331,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 if motif_pred is None:
                     continue
 
+                # Initialize losses
+                # Grid Motif Classification
                 l_cat_pos = torch.tensor(0.0, device=device)
                 l_cat_neg = torch.tensor(0.0, device=device)
                 l_cat_contrast = torch.tensor(0.0, device=device)
@@ -261,13 +342,13 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                     masks = to_cuda(masks, device)
 
                     motif_pred = torch.sigmoid(motif_pred)
-                    motif_preds = [motif_pred]
+                    motif_preds = [motif_pred]  # assume batchsize=1
 
                     l_cat_pos, l_cat_neg = Loss.MaskedBCE(cats, motif_preds, masks)
-                    # Access w_contrast from config.losses
-                    l_cat_contrast = config.losses.w_contrast * Loss.ContrastLoss(motif_preds, masks)
+                    l_cat_contrast = config.w_contrast * Loss.ContrastLoss(motif_preds, masks)
                     motif_penalty = torch.nn.functional.relu(torch.sum(motif_pred * motif_pred - 25.0))
 
+                # Structure and Screening
                 Pbind = []
                 l_str_dist = torch.tensor(0.0, device=device)
                 key_mae = torch.tensor(0.0, device=device)
@@ -279,21 +360,19 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
                 if keyxyz_pred is not None and grid.shape[1] == rec_key_z.shape[1]:
                     try:
+                        # Structural loss
                         if len(nK.shape) > 1:
                             nK = nK.squeeze(dim=0)
 
                         if eval_struct:
-                            # Access struct_loss from config.losses
-                            l_str_dist, key_mae = Loss.StructureLoss(keyxyz_pred, keyxyz, nK, opt=config.losses.struct_loss)
-                            # Access w_Dkey from config.losses
-                            l_str_pair = config.losses.w_Dkey * Loss.PairDistanceLoss(key_pairdist_pred, keyxyz, nK)
+                            l_str_dist, key_mae = Loss.StructureLoss(keyxyz_pred, keyxyz, nK, opt=config.struct_loss)
+                            l_str_pair = config.w_Dkey * Loss.PairDistanceLoss(key_pairdist_pred, keyxyz, nK)
 
-                            # Access w_spread from config.losses
-                            l_str_attmap_pos= config.losses.w_spread * Loss.SpreadLoss(keyxyz, rec_key_z, grid, nK)
-                            l_str_attmap_neg = config.losses.w_spread * Loss.SpreadLoss_v2(keyxyz, rec_key_z, grid, nK)
+                            l_str_attmap_pos= config.w_spread * Loss.SpreadLoss(keyxyz, rec_key_z, grid, nK)
+                            l_str_attmap_neg = config.w_spread * Loss.SpreadLoss_v2(keyxyz, rec_key_z, grid, nK)
                             l_str_attmap = l_str_attmap_pos + 0.2 *l_str_attmap_neg
-                        # Access screening loss weights from config.losses
-                        l_screen = Loss.ScreeningLoss(bind_pred[0], blabel)
+                        # Screening loss
+                        l_screen = Loss.ScreeningLoss(bind_pred[0], blabel) # BCE with logits
                         l_screen_rank = Loss.RankingLoss(torch.sigmoid(bind_pred[0]), blabel)
                         l_screen_cont = Loss.ScreeningContrastLoss(bind_pred[1], blabel, nK)
                         Pbind = ['%4.2f' % float(a) for a in torch.sigmoid(bind_pred[0])]
@@ -302,26 +381,30 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
                     except Exception as e:
                         print(f"Error in loss calculation: {e}")
+                        # print traceback
                         import traceback
                         traceback.print_exc()
                         pass
 
+                # L2 regularization
                 l2_penalty = torch.tensor(0.0, device=device)
                 if is_train:
                     for param in model.parameters():
                         l2_penalty += torch.norm(param)
 
-                # Access all loss weights from config.losses
-                loss = (config.losses.w_cat * (l_cat_pos + l_cat_neg + l_cat_contrast +
-                                       config.losses.w_penalty * (l2_penalty + motif_penalty)) +
-                        config.losses.w_str * (l_str_dist + l_str_pair + l_str_attmap) +
-                        config.losses.w_screen * l_screen +
-                        config.losses.w_screen_ranking * l_screen_rank +
-                        config.losses.w_screen_contrast * l_screen_cont)
+                # Final loss
+                loss = (config.w_cat * (l_cat_pos + l_cat_neg + l_cat_contrast +
+                                       config.w_penalty * (l2_penalty + motif_penalty)) +
+                        config.w_str * (l_str_dist + l_str_pair + l_str_attmap) +
+                        config.w_screen * l_screen +
+                        config.w_screen_ranking * l_screen_rank +
+                        config.w_screen_contrast * l_screen_cont)
 
+                # Apply target weight
                 trg_weight = weights.get(pnames[0], 1.0)
                 loss = loss * trg_weight
 
+                # Store losses
                 temp_loss["total"].append(loss.cpu().detach().numpy())
                 temp_loss["CatP"].append(l_cat_pos.cpu().detach().numpy())
                 temp_loss["CatN"].append(l_cat_neg.cpu().detach().numpy())
@@ -339,13 +422,15 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                     temp_loss["ScreenR"].append(l_screen_rank.cpu().detach().numpy())
                     temp_loss["ScreenC"].append(l_screen_cont.cpu().detach().numpy())
 
+                # Backward pass and optimization
                 if is_train and (b_count + 1) % accum == 0:
                     loss.requires_grad_(True)
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
 
-                    if rank == 0 and not config.training.debug: # Access debug from config.training
+                    # Log to wandb at step level for training (rank 0 only)
+                    if rank == 0 and not config.debug:
                         step_metrics = {
                             "step": global_step + b_count,
                             "train_step/loss_total": float(loss.cpu().detach().numpy()),
@@ -372,7 +457,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
                         wandb.log(step_metrics)
 
-                    print (f"Rank {rank} TRAIN Epoch: [{epoch:2d}/{config.training.max_epoch:2d}], " # Access max_epoch from config.training
+                #print losses
+                    print (f"Rank {rank} TRAIN Epoch: [{epoch:2d}/{config.max_epoch:2d}], "
                           f"Batch: [{b_count:2d}/{len(loader):2d}], loss: {np.sum(temp_loss['total'][-accum:]):8.3f} "
                           f"(Category Pos/Neg/Contrast: {np.sum(temp_loss['CatP'][-accum:]):6.1f}/"
                           f"{np.sum(temp_loss['CatN'][-accum:]):6.1f}/{np.sum(temp_loss['CatCont'][-accum:]):6.3f}|"
@@ -384,8 +470,9 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                           f"{np.sum(temp_loss['ScreenC'][-accum:]):6.3f}|"
                           f"{pnames[0]}:", ' '.join(Pbind), ','.join(info['ligands'][0]))
 
-                elif (b_count + 1) % accum == 0:
-                    if rank == 0 and not config.training.debug: # Access debug from config.training
+                elif (b_count + 1) % accum == 0:  # validation
+                    # Log to wandb at step level for validation (rank 0 only)
+                    if rank == 0 and not config.debug:
                         step_metrics = {
                             "step": global_step + b_count,
                             "valid_step/loss_total": float(loss.cpu().detach().numpy()),
@@ -412,7 +499,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
                         wandb.log(step_metrics)
 
-                    print (f"Rank {rank} VALID Epoch: [{epoch:2d}/{config.training.max_epoch:2d}], " # Access max_epoch from config.training
+                    print (f"Rank {rank} VALID Epoch: [{epoch:2d}/{config.max_epoch:2d}], "
                           f"Batch: [{b_count:2d}/{len(loader):2d}], loss: {np.sum(temp_loss['total'][-accum:]):8.3f} "
                           f"(Category Pos/Neg/Contrast: {np.sum(temp_loss['CatP'][-accum:]):6.1f}/"
                           f"{np.sum(temp_loss['CatN'][-accum:]):6.1f}/{np.sum(temp_loss['CatCont'][-accum:]):6.3f}|"
@@ -429,29 +516,29 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
     return temp_loss, Pt, Pf
 
 
-def train_model(rank, world_size, config: Config): # Type hint for config is now your main Config
+def train_model(rank, world_size, config):
     """Main training function"""
     gpu = rank % world_size
     dist.init_process_group(backend='gloo', world_size=world_size, rank=rank)
 
-    # Access debug from config.training
-    if rank == 0 and not config.training.debug:
+    # Initialize wandb for rank 0 only
+    if rank == 0 and not config.debug:
         wandb.init(
             project="motifscreen-aff",
-            name=f"{config.modelname}{config.version}_epoch{config.training.max_epoch}", # Access max_epoch from config.training
+            name=f"{config.modelname}{config.version}_epoch{config.max_epoch}",
             mode="online",
             config={
                 "model_version": config.version,
                 "model_name": config.modelname,
-                "learning_rate": config.training.lr, # Access LR from config.training
-                "max_epochs": config.training.max_epoch, # Access max_epoch from config.training
-                "batch_size": config.dataloader.batch_size, # Access batch_size from config.dataloader
-                "dropout_rate": config.dropout_rate, # This is a direct attribute
-                "edge_mode": config.graph.edgemode, # Access from config.graph
-                "ball_radius": config.graph.ball_radius, # Access from config.graph
-                "w_cat": config.losses.w_cat, # Access from config.losses
-                "w_str": config.losses.w_str, # Access from config.losses
-                "w_screen": config.losses.w_screen # Access from config.losses
+                "learning_rate": config.LR,
+                "max_epochs": config.max_epoch,
+                "batch_size": config.dataloader.batch_size,
+                "dropout_rate": config.dropout_rate,
+                "edge_mode": config.data.edgemode,
+                "ball_radius": config.data.ball_radius,
+                "w_cat": config.w_cat,
+                "w_str": config.w_str,
+                "w_screen": config.w_screen
             }
         )
 
@@ -459,43 +546,41 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
 
+    # Load model and parameters
     model, optimizer, start_epoch, train_loss, valid_loss = load_params(rank, config)
 
-    # Access ddp from config.training
-    if config.training.ddp:
+    if config.ddp:
         if torch.cuda.is_available():
             ddp_model = DDP(model, device_ids=[gpu], find_unused_parameters=False)
         else:
             ddp_model = DDP(model, find_unused_parameters=False)
 
-    if config.training.debug: # Access debug from config.training
+    # Load data using grouped configuration
+    if config.debug:
         train_datasetf = 'data/small.txt'
         valid_datasetf = 'data/small.txt'
     else:
-        train_datasetf = config.train_file # Direct access to train_file and valid_file
-        valid_datasetf = config.valid_file
-
-    # Load data now takes the main config object
+        train_datasetf = config.datasetf[0]
+        valid_datasetf = config.datasetf[1]
     train_loader, weights_train = load_data(train_datasetf, world_size, rank, config)
     valid_loader, weights_valid = load_data(valid_datasetf, world_size, rank, config)
 
     auc_train = {'chembl': [], 'biolip': [], 'pdbbind': []}
     auc_valid = {'chembl': [], 'biolip': [], 'pdbbind': []}
 
+    # Initialize global step counter
     global_step = start_epoch * len(train_loader)
 
-    # Access max_epoch from config.training
-    for epoch in range(start_epoch, config.training.max_epoch):
-        print(f"\n=== Epoch {epoch}/{config.training.max_epoch} ===")
+    # Training loop
+    for epoch in range(start_epoch, config.max_epoch):
+        print(f"\n=== Epoch {epoch}/{config.max_epoch} ===")
 
-        # Access ddp from config.training
-        if config.training.ddp:
+        # Train
+        if config.ddp:
             ddp_model.train()
-            # Pass the main config object to train_one_epoch
             temp_loss, Pt, Pf = train_one_epoch(ddp_model, optimizer, train_loader, rank, epoch, True, config, weights_train, global_step)
         else:
             model.train()
-            # Pass the main config object to train_one_epoch
             temp_loss, Pt, Pf = train_one_epoch(model, optimizer, train_loader, rank, epoch, True, config, weights_train, global_step)
 
         for k in train_loss:
@@ -506,7 +591,8 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 if len(Pt[key]) > 10 and len(Pf[key]) > 10:
                     auc_train[key].append(calc_AUC(Pt[key], Pf[key]))
 
-            if not config.training.debug: # Access debug from config.training
+            # Log training losses to wandb
+            if not config.debug:
                 train_metrics = {
                     "epoch": epoch,
                     "train/loss_total": np.mean(train_loss['total'][-1]),
@@ -531,6 +617,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                         "train/loss_screening_contrast": np.mean(train_loss['ScreenC'][-1])
                     })
 
+                # Add AUC values
                 for key in ['pdbbind', 'chembl', 'biolip']:
                     if key in auc_train and len(auc_train[key]) > 0:
                         train_metrics[f"train/auc_{key}"] = auc_train[key][-1]
@@ -538,17 +625,17 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 wandb.log(train_metrics)
 
         optimizer.zero_grad()
+
+        # Update global step counter after training
         global_step += len(train_loader)
 
+        # Validation
         with torch.no_grad():
-            # Access ddp from config.training
-            if config.training.ddp:
+            if config.ddp:
                 ddp_model.eval()
-                # Pass the main config object to train_one_epoch
                 temp_loss, Pt, Pf = train_one_epoch(ddp_model, optimizer, valid_loader, rank, epoch, False, config, weights_valid, global_step)
             else:
                 model.eval()
-                # Pass the main config object to train_one_epoch
                 temp_loss, Pt, Pf = train_one_epoch(model, optimizer, valid_loader, rank, epoch, False, config, weights_valid, global_step)
 
         for k in valid_loss:
@@ -559,7 +646,8 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 if len(Pt[key]) > 10 and len(Pf[key]) > 10:
                     auc_valid[key].append(calc_AUC(Pt[key], Pf[key]))
 
-            if not config.training.debug: # Access debug from config.training
+            # Log validation losses to wandb
+            if not config.debug:
                 valid_metrics = {
                     "epoch": epoch,
                     "valid/loss_total": np.mean(valid_loss['total'][-1]),
@@ -584,6 +672,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                         "valid/loss_screening_contrast": np.mean(valid_loss['ScreenC'][-1])
                     })
 
+                # Add AUC values
                 for key in ['pdbbind', 'chembl', 'biolip']:
                     if key in auc_valid and len(auc_valid[key]) > 0:
                         valid_metrics[f"valid/auc_{key}"] = auc_valid[key][-1]
@@ -602,9 +691,11 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                     auc_l += f' / {auc_valid[key][-1]:6.4f}'
             print(auc_l)
 
+        # Save checkpoints
         if rank == 0:
             model_dir = join("models", f"{config.modelname}{config.version}")
 
+            # Save best model
             if np.min([np.mean(vl) for vl in valid_loss["total"]]) == np.mean(valid_loss["total"][-1]):
                 torch.save({
                     'epoch': epoch,
@@ -617,6 +708,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 }, join(model_dir, "best.pkl"))
                 print("Saved best model")
 
+            # Save current model
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -627,6 +719,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 'auc_valid': auc_valid,
             }, join(model_dir, "model.pkl"))
 
+            # Save epoch-specific model
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -645,25 +738,27 @@ def main():
                         help='Config name (e.g., common) or path to config file')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
+    # Additional parameter override arguments
     parser.add_argument('--version', type=str, help='Override model version (e.g., v1.0, v2.0)')
 
     args = parser.parse_args()
 
     # Load configuration
     if args.config.endswith('.yaml'):
+        # Direct path to config file
+        from configs.config import load_config
         config = load_config(args.config)
     else:
+        # Try to load from YAML
         try:
             config = load_config_with_base(args.config)
         except FileNotFoundError:
             print(f"Config '{args.config}' not found. Using default common config.")
-            # Fallback to a default config instance if not found
-            # This requires having a default Config instance you can create
-            # For now, let's assume it always finds a config for simplicity in this example
-            raise # Re-raise if config not found as a critical error.
+
+    # Override debug mode if specified
     if args.debug:
-        config.training.debug = True # Access debug from config.training
-        config.dataloader.num_workers = 1 # Access num_workers from config.dataloader
+        config.debug = True
+        config.dataloader.num_workers = 1
     if args.version:
         config.version = args.version
 
@@ -672,15 +767,15 @@ def main():
     print(f"Using model: MSK{config.version}")
     print(f"Training dropout: {config.dropout_rate}")
 
+    # Print grouped parameter summary
     print("\n=== Grouped Parameter Configuration ===")
-    # Access parameters from their structured locations
-    print(f"Graph: edgemode={config.graph.edgemode}, edgek={config.graph.edgek}, "
-          f"edgedist={config.graph.edgedist}, ball_radius={config.graph.ball_radius}")
-    print(f"Processing: ntype={config.processing.ntype}, max_subset={config.processing.max_subset}, "
-          f"drop_H={config.processing.drop_H}")
-    print(f"Augmentation: randomize={config.augmentation.randomize}")
-    print(f"Cross-validation: load_cross={config.cross_validation.load_cross}, "
-          f"cross_eval_struct={config.cross_validation.cross_eval_struct}")
+    print(f"Graph: edgemode={config.data.edgemode}, edgek={config.data.edgek}, "
+          f"edgedist={config.data.edgedist}, ball_radius={config.data.ball_radius}")
+    print(f"Processing: ntype={config.data.ntype}, max_subset={config.data.max_subset}, "
+          f"drop_H={config.data.drop_H}")
+    print(f"Augmentation: randomize={config.data.randomize}")
+    print(f"Cross-validation: load_cross={config.load_cross}, "
+          f"cross_eval_struct={config.cross_eval_struct}")
     print("="*50)
 
     if torch.cuda.is_available():
@@ -690,18 +785,18 @@ def main():
     world_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
     print(f"Using {world_size} GPUs.." if torch.cuda.is_available() else "Using CPU only..")
 
-    # Access ddp from config.training
+    # Disable DDP when using CPU only
     if not torch.cuda.is_available():
-        config.training.ddp = False
+        config.ddp = False
         print("Disabled DDP for CPU-only execution")
 
+    # Set environment variables for distributed training
     if 'MASTER_ADDR' not in os.environ:
         os.environ['MASTER_ADDR'] = 'localhost'
     if 'MASTER_PORT' not in os.environ:
         os.environ['MASTER_PORT'] = '12346'
 
-    # Access ddp from config.training
-    if config.training.ddp:
+    if config.ddp:
         mp.spawn(train_model, args=(world_size, config), nprocs=world_size, join=True)
     else:
         train_model(0, 1, config)
