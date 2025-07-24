@@ -300,7 +300,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config, wei
             e_count += 1
             continue
 
-        with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+        with torch.cuda.amp.autocast(enabled=False):
             # Use no_sync only if model has it (DDP models), otherwise use nullcontext
             sync_context = model.no_sync() if hasattr(model, 'no_sync') else contextlib.nullcontext()
             with sync_context:
