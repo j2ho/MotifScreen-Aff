@@ -549,8 +549,8 @@ class GraphBuilder:
                     bond_matrix[k, l] = bond_matrix[l, k] = 1
 
             # Self-connections
-            for i in range(len(all_xyz)):
-                bond_matrix[i, i] = 1
+            # for i in range(len(all_xyz)):
+            #     bond_matrix[i, i] = 1
 
             # Distance-based edges using receptor parameters
             selected_xyz = all_xyz[selected_indices]
