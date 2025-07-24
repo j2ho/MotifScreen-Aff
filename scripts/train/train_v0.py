@@ -18,14 +18,14 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from src.data.training_dataset import TrainingDataSet, TrainingConfig, DataPaths, GraphConfig, DataProcessing, DataAugmentation, CrossValidation, collate
+from data.dataset_v0 import TrainingDataSet, TrainingConfig, DataPaths, GraphConfig, DataProcessing, DataAugmentation, CrossValidation, collate
 # from src.data.dataset_debug import DebugTrainingDataSet as TrainingDataSet
 from src.model.models.msk1 import EndtoEndModel as MSK_1
 from src.model.models.msk_v2 import EndtoEndModel as MSK_2
 
 from scripts.train.utils import count_parameters, to_cuda, calc_AUC
 import src.model.loss.losses as Loss
-from configs.config import load_config_with_base
+from configs.config_v0 import load_config_with_base, load_config
 
 import warnings
 warnings.filterwarnings("ignore", message="sourceTensor.clone")
@@ -746,7 +746,6 @@ def main():
     # Load configuration
     if args.config.endswith('.yaml'):
         # Direct path to config file
-        from configs.config import load_config
         config = load_config(args.config)
     else:
         # Try to load from YAML
