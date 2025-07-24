@@ -17,45 +17,46 @@ class EndtoEndModel(nn.Module):
 
         self.dropout_rate = args.dropout_rate
 
-        self.lig_to_key_attn = args.params_TR.lig_to_key_attn
-        self.shared_trigon = args.params_TR.shared_trigon
+        self.lig_to_key_attn = args.model_params_TR.lig_to_key_attn
+        self.shared_trigon = args.model_params_TR.shared_trigon
 
-        m = args.params_TR.m
-        c = args.params_TR.c
-        self.d = args.params_TR.c
-        dropout_rate = args.params_TR.dropout_rate
+        m = args.model_params_TR.m
+        c = args.model_params_TR.c
+        self.d = args.model_params_TR.c
+        dropout_rate = args.model_params_TR.dropout_rate
 
         ## 1) Grid/Ligand featurizer
-        self.GridFeaturizer = Grid_SE3( **args.params_grid.__dict__ )
+        self.GridFeaturizer = Grid_SE3( **args.model_params_grid.__dict__ )
 
-        if args.params_ligand.model == 'se3':
-            self.LigandFeaturizer = Ligand_SE3( **args.params_ligand.__dict__ )
-        elif args.params_ligand.model == 'gat':
-            self.LigandFeaturizer = Ligand_GAT( **args.params_ligand.__dict__ )
+        if args.model_params_ligand.model == 'se3':
+            self.LigandFeaturizer = Ligand_SE3( **args.model_params_ligand.__dict__ )
+        elif args.model_params_ligand.model == 'gat':
+            self.LigandFeaturizer = Ligand_GAT( **args.model_params_ligand.__dict__ )
         else:
-            sys.exit("unknown ligand_model: "+args.params_ligand.model)
+            sys.exit("unknown ligand_model: "+args.model_params_ligand.model)
 
+
+        self.extract_ligand_embedding = LigandModule( args.dropout_rate,
+                                                      n_input=args.model_params_ligand.n_lig_global_in,
+                                                      n_out=args.model_params_ligand.n_lig_global_out, )
 
         ## 2) Trigon-attn module
-        self.trigon_lig = TrigonModule( args.params_TR.n_trigon_lig_layers,
+        self.trigon_lig = TrigonModule( args.model_params_TR.n_trigon_lig_layers,
                                         m, c, dropout_rate )
 
 
         ## 3) Heads
         self.class_module = ClassModule( m, c,
-                                         args.params_Aff.classification_mode,
-                                         args.params_ligand.n_lig_global_out)
+                                         args.model_params_aff.classification_mode,
+                                         args.model_params_ligand.n_lig_global_out)
 
         self.transform_distance = DistanceModule( c )
         self.struct_module = StructModule( c )
-        self.extract_ligand_embedding = LigandModule( args.dropout_rate,
-                                                      n_input=args.params_ligand.n_lig_global_in,
-                                                      n_out=args.params_ligand.n_lig_global_out, )
 
         self.sig_Rl = torch.nn.Parameter(torch.tensor(10.0))
 
-        Nlayers = args.params_TR.n_trigon_key_layers
-        normalize = args.params_TR.normalize_Xform
+        Nlayers = args.model_params_TR.n_trigon_key_layers
+        normalize = args.model_params_TR.normalize_Xform
 
         if self.shared_trigon:
             trigon_key_layer = TrigonModule(1, m, c, dropout_rate)
