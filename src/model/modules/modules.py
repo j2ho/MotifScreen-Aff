@@ -3,7 +3,7 @@ import torch.nn as nn
 from src.model.utils import to_dense_batch, make_batch_vec, masked_softmax
 
 class StructModule( nn.Module ):
-    def __init__(self, m ):
+    def __init__(self, m):
         super().__init__()
         self.lastlinearlayer = nn.Linear(m,1)
         self.scale = 1.0 # num_head #1.0/np.sqrt(float(d))
@@ -30,12 +30,12 @@ class StructModule( nn.Module ):
 
 
 class LigandModule( nn.Module ):
-    def __init__(self, dropout_rate, n_input=19, n_out=4, c=16 ):
+    def __init__(self, dropout_rate, n_input=19, n_out=4, hidden_dim=16 ):
         super().__init__()
         self.dropoutlayer = nn.Dropout(dropout_rate)
-        self.linear1 = nn.Linear(n_input, c)
-        self.layernorm = nn.LayerNorm(c)
-        self.linear2 = nn.Linear(c, n_out )
+        self.linear1 = nn.Linear(n_input, hidden_dim)
+        self.layernorm = nn.LayerNorm(hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, n_out)
 
     def forward(self, ligand_features, dropout ): # 19: 10(ntors) + 3(kapp) + 1(natm) + 3(nacc/don/aro) + 3(principal)
         if dropout:
@@ -82,9 +82,9 @@ class XformModule( nn.Module ):
         return V
 
 class DistanceModule(nn.Module):
-    def __init__(self,c):
+    def __init__(self,d, c):
         super().__init__()
-        self.linear = nn.Linear(c,c)
+        self.linear = nn.Linear(d,c)
         self.relu = nn.ReLU()
         self.norm = nn.LayerNorm(c)
 

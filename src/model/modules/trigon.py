@@ -157,8 +157,9 @@ class Transition(torch.nn.Module):
 class TrigonModule(nn.Module):
     def __init__(self,
                  n_trigonometry_module_stack,
-                 m=16,
-                 c=32,
+                 grid_m=64,
+                 ligand_m=64, 
+                 c=64,
                  dropout_rate=0.1,
                  bias=True,
     ):
@@ -167,8 +168,8 @@ class TrigonModule(nn.Module):
 
         self.n_trigonometry_module_stack = n_trigonometry_module_stack
 
-        self.Wrs = nn.Linear(m,c,bias=bias)
-        self.Wls = nn.Linear(m,c,bias=bias)
+        self.Wrs = nn.Linear(grid_m,c,bias=bias)
+        self.Wls = nn.Linear(ligand_m,c,bias=bias)
 
         self.protein_to_compound_list = nn.ModuleList([TriangleProteinToCompound(embedding_channels=c, c=c) for _ in range(n_trigonometry_module_stack)])
         self.triangle_self_attention_list = nn.ModuleList([TriangleSelfAttentionRowWise(embedding_channels=c, c=c) for _ in range(n_trigonometry_module_stack)])
