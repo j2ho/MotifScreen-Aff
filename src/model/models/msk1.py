@@ -17,13 +17,9 @@ class EndtoEndModel(nn.Module):
 
         self.dropout_rate = args.dropout_rate
 
-        self.lig_to_key_attn = args.model_params_TR.lig_to_key_attn
-        self.shared_trigon = args.model_params_TR.shared_trigon
-
-        m = args.model_params_TR.m
-        c = args.model_params_TR.c
-        self.d = args.model_params_TR.c
-        dropout_rate = args.model_params_TR.dropout_rate
+        self.c = args.model_params_TR.c # embedding channels
+        self.d = args.model_params_TR.d # distance channels(bins)
+        self.dropout_rate = args.model_params_TR.dropout_rate
 
         ## Grid/Ligand featurizer
         self.GridFeaturizer = Grid_SE3( **args.model_params_grid.__dict__ )
@@ -38,33 +34,50 @@ class EndtoEndModel(nn.Module):
 
         self.extract_ligand_embedding = LigandModule( args.dropout_rate,
                                                       n_input=args.model_params_ligand.n_lig_global_in,
-                                                      n_out=args.model_params_ligand.n_lig_global_out, )
+                                                      n_out=args.model_params_ligand.n_lig_global_out)
+
 
         ## Trigon-attn module
         # trigon module before masking only to key atoms
-        self.trigon_lig = TrigonModule( args.model_params_TR.n_trigon_lig_layers,
-                                        m, c, dropout_rate )
+        self.trigon_lig = TrigonModule( n_trigonometry_module_stack=args.model_params_TR.n_trigon_lig_layers,
+                                        grid_m=args.model_params_grid.l0_out_features,
+                                        ligand_m=args.model_params_ligand.l0_out_features,
+                                        c=self.c, dropout_rate=self.dropout_rate )
 
-        self.transform_distance = DistanceModule( c )
-        self.struct_module = StructModule( c )
+        self.transform_distance = DistanceModule(self.d,self.c)
+        self.struct_module = StructModule(self.c) # receives z. self.c = embedding channels = output z dim
 
         self.sig_Rl = torch.nn.Parameter(torch.tensor(10.0))
 
         Nlayers = args.model_params_TR.n_trigon_key_layers
         normalize = args.model_params_TR.normalize_Xform
 
-        if self.shared_trigon:
-            trigon_key_layer = TrigonModule(1, m, c, dropout_rate)
+
+        self.lig_to_key_attn = args.model_params_TR.lig_to_key_attn
+        # Now, l0_out_features has to be the same as c, if we don't want this we can add linear.. 
+        self.grid_proj = nn.Linear(args.model_params_grid.l0_out_features, self.c)
+        self.key_proj = nn.Linear(args.model_params_ligand.l0_out_features, self.c)
+
+        if args.model_params_TR.shared_trigon:
+            trigon_key_layer = TrigonModule(n_trigonometry_module_stack=1,
+                                            # 위에 projection 했으면 이거 c로 바꿔야함
+                                            grid_m=self.c, #args.model_params_grid.l0_out_features,
+                                            ligand_m =self.c, #args.model_params_ligand.l0_out_features, 
+                                            c=self.c, dropout_rate=self.dropout_rate)
             self.trigon_key_layers = nn.ModuleList([ trigon_key_layer for _ in range(Nlayers) ])
 
         else:
             self.trigon_key_layers = nn.ModuleList([
-                TrigonModule(1, m, c, dropout_rate) for _ in range(Nlayers)])
-        self.XformKeys = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
-        self.XformGrids = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
+                TrigonModule(n_trigonometry_module_stack=1,
+                            # 위에 projection 했으면 이거 c로 바꿔야함
+                            grid_m=self.c, #args.model_params_grid.l0_out_features,
+                            ligand_m =self.c, #args.model_params_ligand.l0_out_features, 
+                            c=self.c, dropout_rate=self.dropout_rate) for _ in range(Nlayers) ])
+        self.XformKeys = nn.ModuleList([ XformModule( self.c, normalize=normalize ) for _ in range(Nlayers) ])
+        self.XformGrids = nn.ModuleList([ XformModule( self.c, normalize=normalize ) for _ in range(Nlayers) ])
         
         ## Prediction Heads
-        self.class_module = ClassModule( m, c,
+        self.class_module = ClassModule( self.c, self.c,
                                          args.model_params_aff.classification_mode,
                                          args.model_params_ligand.n_lig_global_out)
 
@@ -115,8 +128,8 @@ class EndtoEndModel(nn.Module):
         D_lig  = get_pair_dis_one_hot(lig_x_batched, bin_size=0.25, bin_min=-0.1, bin_max=15.75, num_classes=self.d).float()
         h_lig_batched, _  = to_dense_batch(h_lig, batchvec_lig)
 
-        # 3-3) Triangle attention with all ligand atoms 
-        z_mask = torch.einsum('bn,bm->bnm', grid_mask, lig_mask )
+        # 3-3) Triangle attention with all ligand atoms
+        z_mask = torch.einsum('bn,bm->bnm', grid_mask, lig_mask)
 
         z = self.trigon_lig( h_grid_batched, h_lig_batched, z_mask,
                              D_grid, D_lig,
@@ -150,24 +163,27 @@ class EndtoEndModel(nn.Module):
         z_mask = torch.einsum('bn,bm->bnm', grid_mask, key_mask)
 
         h_grid_batched = h_grid_batched.repeat(h_key_batched.shape[0],1,1)
+        ### IF WE WANT TO USE DIFFEERNT DIMENSION for l0_out_features and c ..... 
+        h_key_batched = self.key_proj(h_key_batched)
+        h_grid_batched = self.grid_proj(h_grid_batched)
+        ##############################################
         for trigon,xformK,xformG in zip(self.trigon_key_layers,self.XformKeys,self.XformGrids):
 
-            D_key = self.transform_distance( h_key_batched )
+            D_key = self.transform_distance(h_key_batched)
 
             h_key_batched  = xformK( h_key_batched, h_grid_batched, z, z_mask, dim=2 ) # key/query/attn
             h_grid_batched = xformG( h_grid_batched, h_key_batched, z, z_mask, dim=1 ) # key/query/attn
             # update z
             z = trigon(h_grid_batched, h_key_batched, z_mask,
                        D_grid, D_key,
-                       drop_out=drop_out )
+                       drop_out=drop_out)
 
-            #z_mask = torch.einsum('bn,bm->bnm', grid_mask, key_mask )
             # Ykey_s: B x K x 3; z_norm: B x N x K x d
-            # z: B x N x K x d; z_maks: B x N x K
-            Ykey_s, z_norm = self.struct_module( z, z_mask, Ggrid, key_mask )
+            # z: B x N x K x d; z_mask: B x N x K
+            Ykey_s, z_norm = self.struct_module(z, z_mask, Ggrid, key_mask)
 
         # 4) final prediction head
-        aff = self.class_module( z, h_grid_batched, h_key_batched,
-                                 lig_rep=h_lig_global, w_mask=key_mask )
+        aff = self.class_module(z, h_grid_batched, h_key_batched,
+                                 lig_rep=h_lig_global, w_mask=key_mask)
 
         return Ykey_s, D_key, z_norm, cs, aff, None
