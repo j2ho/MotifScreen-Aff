@@ -25,7 +25,7 @@ class EndtoEndModel(nn.Module):
         self.d = args.model_params_TR.c
         dropout_rate = args.model_params_TR.dropout_rate
 
-        ## 1) Grid/Ligand featurizer
+        ## Grid/Ligand featurizer
         self.GridFeaturizer = Grid_SE3( **args.model_params_grid.__dict__ )
 
         if args.model_params_ligand.model == 'se3':
@@ -40,7 +40,7 @@ class EndtoEndModel(nn.Module):
                                                       n_input=args.model_params_ligand.n_lig_global_in,
                                                       n_out=args.model_params_ligand.n_lig_global_out, )
 
-        ## 2) Trigon-attn module
+        ## Trigon-attn module
         # trigon module before masking only to key atoms
         self.trigon_lig = TrigonModule( args.model_params_TR.n_trigon_lig_layers,
                                         m, c, dropout_rate )
@@ -63,7 +63,7 @@ class EndtoEndModel(nn.Module):
         self.XformKeys = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
         self.XformGrids = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
         
-        ## 3) Heads
+        ## Prediction Heads
         self.class_module = ClassModule( m, c,
                                          args.model_params_aff.classification_mode,
                                          args.model_params_ligand.n_lig_global_out)
@@ -72,26 +72,22 @@ class EndtoEndModel(nn.Module):
     def forward(self, Grec, Glig, keyidx, grididx, u=None,
                 gradient_checkpoint=True, drop_out=False):
 
+        # 0) if there is no grid node, return None
+        Ykey_s, z_norm, aff = None, None, None
+        Ggrid = Grec.subgraph( grididx )
+        NullArgs = (None, None, None, None, None, None) 
+
+        if (Ggrid.batch_num_nodes()==0).any():
+            return NullArgs
+        
         # 1) first process Grec to get h_rec -- "motif"-embedding
         node_features = {'0':Grec.ndata['attr'][:,:,None].float(), 'x': Grec.ndata['x'].float() }
         edge_features = {'0':Grec.edata['attr'][:,:,None].float()}
 
         h_rec, cs = self.GridFeaturizer(Grec, node_features, edge_features, drop_out)
-        # print(f"DEBUG: GridFeaturizer output - h_rec shape: {h_rec.shape if h_rec is not None else 'None'}, cs shape: {cs.shape if cs is not None else 'None'}")
-
-        gridmap = torch.eye(h_rec.shape[0]).to(Grec.device)[grididx]
-
-        h_grid = torch.matmul(gridmap, h_rec) # grid part
-        # print(f"DEBUG: h_grid shape: {h_grid.shape if h_grid is not None else 'None'}")
-
         # 1-1) trim to grid part of Grec
-        Ggrid = Grec.subgraph( grididx )
-        NullArgs = (None, None, None, None, None, None) # for return
-
-        if (Ggrid.batch_num_nodes()==0).any():
-            return NullArgs
-
-        Ykey_s, z_norm, aff = None, None, None
+        gridmap = torch.eye(h_rec.shape[0]).to(Grec.device)[grididx]
+        h_grid = torch.matmul(gridmap, h_rec) 
 
         # 2) ligand embedding
         try:
@@ -101,10 +97,8 @@ class EndtoEndModel(nn.Module):
             # print(f"DEBUG: LigandFeaturizer failed with error: {e}")
             return NullArgs
 
-        # global embedding if needed
         h_lig_global = self.extract_ligand_embedding( Glig.gdata.to(Glig.device),
                                                       dropout=drop_out ) # gdata isn't std attr
-        # print(f"DEBUG: extract_ligand_embedding output - h_lig_global shape: {h_lig_global.shape if h_lig_global is not None else 'None'}")
 
         # 3) Prep Trigon attention
         # 3-1) Grid part
@@ -120,7 +114,6 @@ class EndtoEndModel(nn.Module):
         lig_x_batched, lig_mask = to_dense_batch(ligxyz, batchvec_lig)
         D_lig  = get_pair_dis_one_hot(lig_x_batched, bin_size=0.25, bin_min=-0.1, bin_max=15.75, num_classes=self.d).float()
         h_lig_batched, _  = to_dense_batch(h_lig, batchvec_lig)
-        # vars up to here
 
         # 3-3) Triangle attention with all ligand atoms 
         z_mask = torch.einsum('bn,bm->bnm', grid_mask, lig_mask )
@@ -149,15 +142,13 @@ class EndtoEndModel(nn.Module):
             h_key_batched = h_key_batched + torch.einsum('bkj,bjd->bkd', A, h_lig_batched )
             h_key_batched = nn.functional.layer_norm(h_key_batched, h_key_batched.shape)
 
-        # vars up to here
+        # 3-5) z reshape(mask) to key atoms only
         z = torch.einsum( 'bkj,bijd->bikd', key_idx, z)
 
-        # 3-4) key-position-aware attn
-        # shared params; sort of "recycle"
+        # 3-6) key-position-aware attn
         key_mask = torch.einsum('bkj,bj->bk', key_idx, lig_mask.float()).bool()
-        z_mask = torch.einsum('bn,bm->bnm', grid_mask, key_mask )
+        z_mask = torch.einsum('bn,bm->bnm', grid_mask, key_mask)
 
-        #TODO
         h_grid_batched = h_grid_batched.repeat(h_key_batched.shape[0],1,1)
         for trigon,xformK,xformG in zip(self.trigon_key_layers,self.XformKeys,self.XformGrids):
 
@@ -175,6 +166,7 @@ class EndtoEndModel(nn.Module):
             # z: B x N x K x d; z_maks: B x N x K
             Ykey_s, z_norm = self.struct_module( z, z_mask, Ggrid, key_mask )
 
+        # 4) final prediction head
         aff = self.class_module( z, h_grid_batched, h_key_batched,
                                  lig_rep=h_lig_global, w_mask=key_mask )
 
