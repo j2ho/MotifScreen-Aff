@@ -117,32 +117,25 @@ class TriangleSelfAttentionRowWise(torch.nn.Module):
         return x
 
     def forward(self, z, z_mask):
-        # z of shape b, i, j, embedding_channels, where i is protein dim, j is compound dim.
-        # z_mask of shape b, i, j
+        # z[b,i,j,:] = interaction features between grid point i and ligand atom j in batch b
         z = self.layernorm(z)
         p_length = z.shape[1]
         batch_n = z.shape[0]
-        # new_z = torch.zeros(z.shape, device=z.device)
         z_i = z
         z_mask_i = z_mask.view((batch_n, p_length, 1, 1, -1))
         attention_mask_i = (1e9 * (z_mask_i.float() - 1.))
-        # q, k, v of shape b, j, h, c
-        q = self.reshape_last_dim(self.linear_q(z_i)) #  * (self.attention_head_size**(-0.5))
+        q = self.reshape_last_dim(self.linear_q(z_i)) 
         k = self.reshape_last_dim(self.linear_k(z_i))
         v = self.reshape_last_dim(self.linear_v(z_i))
+        # h = self.all_head_size, c = attention_head_size
         logits = torch.einsum('biqhc,bikhc->bihqk', q, k) + attention_mask_i
         weights = nn.Softmax(dim=-1)(logits)
-        # weights of shape b, h, j, j
-        # attention_probs = self.dp(attention_probs)
         weighted_avg = torch.einsum('bihqk,bikhc->biqhc', weights, v)
         g = self.reshape_last_dim(self.g(z_i)).sigmoid()
         output = g * weighted_avg
         new_output_shape = output.size()[:-2] + (self.all_head_size,)
         output = output.view(*new_output_shape)
-        # output of shape b, j, embedding.
-        # z[:, i] = output
         z = output
-        # print(g.shape, block1.shape, block2.shape)
         z = self.final_linear(z) * z_mask.unsqueeze(-1)
         return z
 
@@ -189,29 +182,28 @@ class TrigonModule(nn.Module):
         # hs_lig: B x Mmax x d
 
         # process features
-        # all inputs are batched
         hs_rec = self.Wrs(hs_rec)
         hs_lig = self.Wls(hs_lig)
-
-        # shrink all lig atom -> key atom
-        # 1nd, bnd -> bnmd? this works correctly anyways...
-        # receptor dim grows to B  here...
+        # initial pairwise features
         z = torch.einsum('bnd,bmd->bnmd', hs_rec, hs_lig )
 
         # trigonometry part
-
         for i_module in range(self.n_trigonometry_module_stack):
             if use_checkpoint:
+                # distance aware cross attention
                 zadd = checkpoint.checkpoint(self.protein_to_compound_list[i_module], z, D_rec, D_lig, z_mask.unsqueeze(-1))
                 if drop_out: zadd = self.dropout(zadd)
                 z = z + zadd
+                # triangle self attention
                 zadd = checkpoint.checkpoint(self.triangle_self_attention_list[i_module], z, z_mask)
                 if drop_out: zadd = self.dropout(zadd)
                 z = z + zadd
             else:
+                # distance aware cross attention
                 zadd = self.protein_to_compound_list[i_module](z, D_rec, D_lig, z_mask.unsqueeze(-1))
                 if drop_out: zadd = self.dropout(zadd)
                 z = z + zadd
+                # triangle self attention
                 zadd = self.triangle_self_attention_list[i_module](z, z_mask)
                 if drop_out: zadd = self.dropout(zadd)
                 z = z + zadd
