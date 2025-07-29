@@ -41,14 +41,9 @@ class EndtoEndModel(nn.Module):
                                                       n_out=args.model_params_ligand.n_lig_global_out, )
 
         ## 2) Trigon-attn module
+        # trigon module before masking only to key atoms
         self.trigon_lig = TrigonModule( args.model_params_TR.n_trigon_lig_layers,
                                         m, c, dropout_rate )
-
-
-        ## 3) Heads
-        self.class_module = ClassModule( m, c,
-                                         args.model_params_aff.classification_mode,
-                                         args.model_params_ligand.n_lig_global_out)
 
         self.transform_distance = DistanceModule( c )
         self.struct_module = StructModule( c )
@@ -67,6 +62,12 @@ class EndtoEndModel(nn.Module):
                 TrigonModule(1, m, c, dropout_rate) for _ in range(Nlayers)])
         self.XformKeys = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
         self.XformGrids = nn.ModuleList([ XformModule( c, normalize=normalize ) for _ in range(Nlayers) ])
+        
+        ## 3) Heads
+        self.class_module = ClassModule( m, c,
+                                         args.model_params_aff.classification_mode,
+                                         args.model_params_ligand.n_lig_global_out)
+
 
     def forward(self, Grec, Glig, keyidx, grididx, u=None,
                 gradient_checkpoint=True, drop_out=False):
@@ -121,15 +122,14 @@ class EndtoEndModel(nn.Module):
         h_lig_batched, _  = to_dense_batch(h_lig, batchvec_lig)
         # vars up to here
 
-        # 3-3) trigon1 "pre-keying"
+        # 3-3) Triangle attention with all ligand atoms 
         z_mask = torch.einsum('bn,bm->bnm', grid_mask, lig_mask )
 
         z = self.trigon_lig( h_grid_batched, h_lig_batched, z_mask,
                              D_grid, D_lig,
                              drop_out=drop_out )
-        # print(f"DEBUG: trigon_lig output - z shape: {z.shape if z is not None else 'None'}")
 
-        # Ligand-> Key mapper (trim down ligand -> key)
+        # 3-4) Ligand-> Key mapper (trim down ligand -> key)
         Kmax = max([idx.shape[0] for idx in keyidx])
         Nmax = max([idx.shape[1] for idx in keyidx])
         key_idx = torch.zeros((Glig.batch_num_nodes().shape[0],Kmax,Nmax)).to(Grec.device) #b x K x N
@@ -138,12 +138,9 @@ class EndtoEndModel(nn.Module):
             key_idx[i,:idx.shape[0],:idx.shape[1]] = idx
             lig_to_key_mask[i,:idx.shape[0],:idx.shape[1]] = 1.0
 
-        # trim down to key after trigon
-        # key_idx: B x K x M
-        key_x_batched = torch.einsum('bik,bji->bjk', lig_x_batched, key_idx)
-
         h_key_batched = torch.einsum('bkj,bjd->bkd',key_idx,h_lig_batched)
 
+        # 3-4) Update key features with all-atom ligand attention
         if self.lig_to_key_attn:
             # key: h_key, query: h_lig
             A = torch.einsum('bkd,bjd->bkj', h_key_batched, h_lig_batched)
@@ -151,8 +148,6 @@ class EndtoEndModel(nn.Module):
 
             h_key_batched = h_key_batched + torch.einsum('bkj,bjd->bkd', A, h_lig_batched )
             h_key_batched = nn.functional.layer_norm(h_key_batched, h_key_batched.shape)
-
-        D_key1  = get_pair_dis_one_hot(key_x_batched, bin_size=0.25, bin_min=-0.1, bin_max=15.75, num_classes=self.d).float()
 
         # vars up to here
         z = torch.einsum( 'bkj,bijd->bikd', key_idx, z)
@@ -166,9 +161,6 @@ class EndtoEndModel(nn.Module):
         h_grid_batched = h_grid_batched.repeat(h_key_batched.shape[0],1,1)
         for trigon,xformK,xformG in zip(self.trigon_key_layers,self.XformKeys,self.XformGrids):
 
-            # move from below to here so that h shares embedding w/ structure...
-            # would it make difference?
-            # update key/grid features using learned attention
             D_key = self.transform_distance( h_key_batched )
 
             h_key_batched  = xformK( h_key_batched, h_grid_batched, z, z_mask, dim=2 ) # key/query/attn
@@ -177,17 +169,12 @@ class EndtoEndModel(nn.Module):
             z = trigon(h_grid_batched, h_key_batched, z_mask,
                        D_grid, D_key,
                        drop_out=drop_out )
-            # print(f"DEBUG: trigon layer output - z shape: {z.shape if z is not None else 'None'}")
 
             #z_mask = torch.einsum('bn,bm->bnm', grid_mask, key_mask )
             # Ykey_s: B x K x 3; z_norm: B x N x K x d
             # z: B x N x K x d; z_maks: B x N x K
             Ykey_s, z_norm = self.struct_module( z, z_mask, Ggrid, key_mask )
-            # print(f"DEBUG: struct_module output - Ykey_s shape: {Ykey_s.shape if Ykey_s is not None else 'None'}, z_norm shape: {z_norm.shape if z_norm is not None else 'None'}")
 
-            #D_key = update_D_from_Ypred( Ykey_s, num_classes=self.d )
-
-        # 2-2) screening module
         aff = self.class_module( z, h_grid_batched, h_key_batched,
                                  lig_rep=h_lig_global, w_mask=key_mask )
 
