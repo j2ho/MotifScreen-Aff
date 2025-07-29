@@ -2,7 +2,10 @@ model:
   name: "msk"
   version: "v1.0"
   
-  # Grid network parameters (enhanced)
+  common:
+    dropout_rate: 0.2  
+
+  # Grid network parameters 
   grid:
     num_layers_grid: 5
     l0_in_features: 102  
@@ -12,7 +15,7 @@ model:
     l0_out_features: 64
     ntypes: 6
     
-  # Ligand network parameters (enhanced)
+  # Ligand network parameters 
   ligand:
     model: "gat"  # Model type for ligand processing
     num_layers: 4
@@ -24,7 +27,7 @@ model:
     n_lig_global_in: 19
     n_lig_global_out: 4
     
-  # SE3 Transformer parameters (enhanced)
+  # trigonal related, but output dims can affect other modules (e.g., ClassModule)
   TR:
     num_channels: 32
     num_degrees: 3
@@ -52,19 +55,20 @@ training:
   load_checkpoint: false
   lr: 1.0e-4
   max_epoch: 500
-  accumulation_steps: 2
+  accumulation_steps: 1
   debug: false
   ddp: true
   silent: false
-  dropout_rate: 0.2
+  amp: false
 
 # Data parameters
 data:
   datapath: "/home/j2ho/DB/for_msk/" 
-  train_file: "data/filtered.train.txt"
-  valid_file: "data/new.valid.txt"
+  train_file: "data/msk_train.txt"
+  valid_file: "data/msk_valid.txt"
   affinityf: "data/affinity.npz"
   decoyf: "decoys.BL2.npz"
+  crossreceptorf: "crossreceptor.filtered.npz" 
   keyatomf: "keyatom.def.npz" 
   ball_radius: 8.0
   edgedist: [2.2, 4.5]
