@@ -438,7 +438,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
     if rank == 0 and not config.training.debug:
         wandb.init(
             project="motifscreen-aff",
-            name=f"{config.modelname}{config.version}_epoch{config.training.max_epoch}", # Access max_epoch from config.training
+            name=f"{config.modelname}{config.version}_{config.model_note}", # Access max_epoch from config.training
             mode="online",
             config={
                 "model_version": config.version,
@@ -646,7 +646,8 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
     parser.add_argument('--version', type=str, help='Override model version (e.g., v1.0, v2.0)')
-
+    parser.add_argument('--model_note', type=str, default='',
+                        help='Additional note for the model name in wandb')
     args = parser.parse_args()
 
     # Load configuration
@@ -666,7 +667,8 @@ def main():
         config.dataloader.num_workers = 1 # Access num_workers from config.dataloader
     if args.version:
         config.version = args.version
-
+    if args.model_note:
+        config.model_note = args.model_note
     print(f"DGL version: {dgl.__version__}")
     print(f"Using config: {args.config}")
     print(f"Using model: MSK{config.version}")
