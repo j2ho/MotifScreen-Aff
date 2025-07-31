@@ -61,7 +61,6 @@ class Grid_SE3(nn.Module):
             c = layer(hs0)
             cs.append(c) # Nx2
         cs = torch.stack(cs,dim=0) #ntype x N x 2
-        # cs = cs.T.squeeze(0)
         cs = cs.permute(1, 0, 2).squeeze(2)  # N x ntypes
 
         return hs0, cs
@@ -142,20 +141,18 @@ class Grid_EGNN(nn.Module):
         Parameters
         ----------
         G : DGLGraph
-            The molecular graph
+            Grec
         node_features : dict
-            Node features with keys '0' (features) and 'x' (coordinates)
+            Node features. keys: '0', 'x' 
         edge_features : dict, optional
             Edge features with key '0'
         drop_out : bool
             Whether to apply dropout
             
-        Returns
+        Returns same as Grid_SE3
         -------
-        hs0 : torch.Tensor
-            Updated node features of shape (N, l0_out_features)
-        cs : torch.Tensor  
-            Classification scores of shape (N, ntypes)
+        hs0 : Updated node features of shape (N, l0_out_features)
+        cs : Classification scores of shape (N, ntypes)
         """
         # Extract node features and coordinates
         h = node_features['0'].squeeze(2)  # [N, l0_in_features]
@@ -202,7 +199,7 @@ class Grid_EGNN(nn.Module):
 
 
 class Ligand_SE3(nn.Module):
-    """SE(3) equivariant GCN with attention"""
+    """SE(3) equivariant GAT for ligands"""
     def __init__(self, num_layers=2,
                  num_channels=32,
                  num_degrees=3,
@@ -249,7 +246,7 @@ class Ligand_SE3(nn.Module):
 class Ligand_GAT(torch.nn.Module):
     def __init__(self,
                  l0_in_features,
-                 num_edge_features, ## unused... can we use?
+                 num_edge_features, 
                  l0_out_features,
                  num_layers,
                  n_heads,
@@ -309,15 +306,10 @@ class Ligand_GAT(torch.nn.Module):
         emb0 = self.initial_linear( in_node_features )
         edge_emb0 = self.initial_linear_edge( in_edge_features )
 
-        #emb0 = emb0.view(-1, self.n_heads, self.num_channels)
-        #edge_emb = edge_emb.view(-1, self.n_heads, self.num_channels)
-
         emb = emb0
         edge_emb = edge_emb0
         for i,layer in enumerate(self.gat_net):
             emb, edge_emb = layer( Glig, emb, edge_emb )
-            # should aggregate head dim
-            # mean pooling
             emb = emb.mean(1)
             edge_emb = edge_emb.mean(1)
 
@@ -327,6 +319,5 @@ class Ligand_GAT(torch.nn.Module):
             emb = torch.nn.functional.elu(emb)
             edge_emb = torch.nn.functional.elu(edge_emb)
 
-        # off if using dgl.nn
         out = self.final_linear( emb )
         return out
