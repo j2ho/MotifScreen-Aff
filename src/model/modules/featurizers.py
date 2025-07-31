@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from src.SE3.se3_transformer.model import SE3Transformer
 from src.SE3.se3_transformer.model.fiber import Fiber
 from dgl.nn import EGATConv
-from .layers import EGNNConv, NodeEGNNConv, AttentionEGNNConv
+from src.model.modules.layers import EGNNConv, NodeEGNNConv, AttentionEGNNConv
 
 
 class Grid_SE3(nn.Module):
