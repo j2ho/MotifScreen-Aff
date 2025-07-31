@@ -1,13 +1,15 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.SE3.se3_transformer.model import SE3Transformer
 from src.SE3.se3_transformer.model.fiber import Fiber
 from dgl.nn import EGATConv
+from .layers import EGNNConv, NodeEGNNConv, AttentionEGNNConv
 
 
 class Grid_SE3(nn.Module):
-    """SE(3) equivariant GCN with attention"""
+    """SE(3) equivariant GAT"""
     def __init__(self, num_layers_grid=2,
                  num_channels=32, num_degrees=3, n_heads=4, div=4,
                  l0_in_features=32,
@@ -63,6 +65,141 @@ class Grid_SE3(nn.Module):
         cs = cs.permute(1, 0, 2).squeeze(2)  # N x ntypes
 
         return hs0, cs
+
+
+class Grid_EGNN(nn.Module):
+    def __init__(self,
+                 model='basic',
+                 num_layers_grid=2,
+                 l0_in_features=102,
+                 l0_out_features=32,
+                 num_channels=32,
+                 num_edge_features=3,
+                 ntypes=6,
+                 dropout_rate=0.1,
+                 **kwargs):
+        super().__init__()
+        
+        self.num_layers = num_layers_grid
+        self.update_coords = False  
+        self.input_proj = nn.Sequential(
+            nn.Linear(l0_in_features, num_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        self.egnn_layers = nn.ModuleList()
+        for i in range(num_layers_grid):
+            if i == 0:
+                in_size = num_channels
+            else:
+                in_size = num_channels
+                
+            if model == 'egnn_coords': # update coordinates as well (as in gd4)
+                self.update_coords = True
+                layer = EGNNConv(
+                    in_size=in_size,
+                    hidden_size=num_channels,
+                    out_size=num_channels,
+                    dropout=dropout_rate,
+                    edge_feat_size=num_edge_features
+                )
+            elif model == 'egnn_attention': # EGNN + attention
+                layer = AttentionEGNNConv(
+                    in_size=in_size,
+                    hidden_size=num_channels,
+                    out_size=num_channels,
+                    dropout=dropout_rate,
+                    edge_feat_size=num_edge_features
+                )
+            else:  # basic EGNN
+                layer = NodeEGNNConv(
+                    in_size=in_size,
+                    hidden_size=num_channels,
+                    out_size=num_channels,
+                    dropout=dropout_rate,
+                    edge_feat_size=num_edge_features
+                )
+            self.egnn_layers.append(layer)
+        
+        self.output_proj = nn.Sequential(
+            nn.Linear(num_channels, l0_out_features),
+            nn.SiLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Motif Label Classification = same as Grid_SE3 
+        Cblock = []
+        for i in range(ntypes):
+            Cblock.append(nn.Linear(l0_out_features, 1, bias=False))
+        self.Cblock = nn.ModuleList(Cblock)
+        
+        self.dropoutlayer = nn.Dropout(dropout_rate)
+
+    def forward(self, G, node_features, edge_features=None, drop_out=False):
+        """Forward pass - same as Grid_SE3
+        
+        Parameters
+        ----------
+        G : DGLGraph
+            The molecular graph
+        node_features : dict
+            Node features with keys '0' (features) and 'x' (coordinates)
+        edge_features : dict, optional
+            Edge features with key '0'
+        drop_out : bool
+            Whether to apply dropout
+            
+        Returns
+        -------
+        hs0 : torch.Tensor
+            Updated node features of shape (N, l0_out_features)
+        cs : torch.Tensor  
+            Classification scores of shape (N, ntypes)
+        """
+        # Extract node features and coordinates
+        h = node_features['0'].squeeze(2)  # [N, l0_in_features]
+        coord = node_features['x'].squeeze()  # [N, 3] - remove all extra dims
+        
+        # ALSO DIFERENT FROM Grid_SE3!! Ensure coord is 2D: [N, 3]
+        if coord.dim() > 2:
+            coord = coord.squeeze(1)
+        
+        if drop_out:
+            h = self.dropoutlayer(h)
+        
+        h = self.input_proj(h)
+        
+        edge_feat = None
+        if edge_features is not None and '0' in edge_features:
+            edge_feat = edge_features['0']
+            # in msk1.py -> added dimension b/c Grid_SE3 uses 3D. squeeze b/c EGNN uses 2D
+            if edge_feat.dim() > 2:
+                edge_feat = edge_feat.squeeze(-1)  # rm SE(3) fiber dimension
+        
+        for i, layer in enumerate(self.egnn_layers):
+            if drop_out:
+                h = self.dropoutlayer(h)
+                
+            if self.update_coords:
+                h, coord = layer(G, h, coord, edge_feat)
+            else:
+                h = layer(G, h, coord, edge_feat)
+        
+        hs0 = self.output_proj(h)
+        
+        if drop_out:
+            hs0 = self.dropoutlayer(hs0)
+        
+        cs = []
+        for i, layer in enumerate(self.Cblock):
+            c = layer(hs0)
+            cs.append(c)
+        cs = torch.stack(cs, dim=0)
+        cs = cs.permute(1, 0, 2).squeeze(2)  # N x ntypes
+        
+        return hs0, cs
+
 
 class Ligand_SE3(nn.Module):
     """SE(3) equivariant GCN with attention"""

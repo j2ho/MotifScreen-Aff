@@ -7,11 +7,11 @@ import torch.nn as nn
 from src.model.modules.modules import StructModule, LigandModule, XformModule, DistanceModule
 from src.model.modules.classification import ClassModule
 from src.model.modules.trigon import TrigonModule
-from src.model.modules.featurizers import Grid_SE3, Ligand_SE3, Ligand_GAT
+from src.model.modules.featurizers import Grid_SE3, Grid_EGNN, Ligand_SE3, Ligand_GAT
 from src.model.utils import to_dense_batch, make_batch_vec, get_pair_dis_one_hot, masked_softmax
 
 class EndtoEndModel(nn.Module):
-    """SE(3) equivariant GCN with attention"""
+    """SE(3) equivariant GNNs with attention"""
     def __init__(self, args):
         super().__init__()
 
@@ -22,7 +22,12 @@ class EndtoEndModel(nn.Module):
         self.dropout_rate = args.model_params_TR.dropout_rate
 
         ## Grid/Ligand featurizer
-        self.GridFeaturizer = Grid_SE3( **args.model_params_grid.__dict__ )
+        if args.model_params_grid.model == 'se3':
+            self.GridFeaturizer = Grid_SE3( **args.model_params_grid.__dict__ )
+        elif args.model_params_grid.model.startswith('egnn'):
+            self.GridFeaturizer = Grid_EGNN( **args.model_params_grid.__dict__ )
+        else:
+            sys.exit("unknown grid_model: "+args.model_params_grid.model)
 
         if args.model_params_ligand.model == 'se3':
             self.LigandFeaturizer = Ligand_SE3( **args.model_params_ligand.__dict__ )
