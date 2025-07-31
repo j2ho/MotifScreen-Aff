@@ -7,12 +7,13 @@ model:
 
   # Grid network parameters 
   grid:
-    num_layers_grid: 5
+    model: "egnn" # 'se3', 'egnn', 'egnn_attention', 'egnn_coords'
+    num_layers_grid: 8 # 5 for 'se3'
     l0_in_features: 102  
     n_heads: 4
     num_channels: 32
     num_edge_features: 3
-    l0_out_features: 64
+    l0_out_features: 32
     ntypes: 6
     
   # Ligand network parameters 
@@ -20,26 +21,17 @@ model:
     model: "gat"  # Model type for ligand processing
     num_layers: 4
     l0_in_features: 18
+    l0_out_features: 64
     n_heads: 4
     num_channels: 32
-    l0_out_features: 64
     num_edge_features: 5
     n_lig_global_in: 19
     n_lig_global_out: 4
     
   # trigonal related, but output dims can affect other modules (e.g., ClassModule)
   TR:
-    num_channels: 32
-    num_degrees: 3
-    div: 4
-    l0_in_features_lig: 21  # will be set by graphfix feature type
-    l0_in_features_rec: 64
-    l1_in_features: 0
-    l1_out_features: 0
-    num_edge_features: 5
-    l0_out_features_lig: 64
-    d: 64
-    m: 64
+    d: 64 
+    # m: 64 (removed - now uses featurizer output dimensions)
     c: 64
     n_trigon_lig_layers: 2
     n_trigon_key_layers: 3

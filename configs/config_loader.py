@@ -47,6 +47,7 @@ class CrossValidationConfig:
 @dataclass
 class GridParams:
     """GridFeaturizer parameters"""
+    model: str = "se3"  
     dropout_rate: float = 0.1
     num_layers_grid: int = 2
     l0_in_features: int = 102
@@ -77,17 +78,7 @@ class LigandParams:
 class TRParams:
     """Trigon/Class/Distance/StructModule parameters"""
     dropout_rate: float = 0.1
-    num_channels: int = 32
-    num_degrees: int = 3
-    div: int = 4
-    l0_in_features_lig: int = 15
-    l0_in_features_rec: int = 32
-    l1_in_features: int = 0
-    l1_out_features: int = 0
-    num_edge_features: int = 5
-    l0_out_features_lig: int = 64
-    d: int = 64
-    m: int = 64
+    d: int = 64  # Now automatically set to c
     c: int = 64
     n_trigon_lig_layers: int = 3
     n_trigon_key_layers: int = 3
@@ -137,6 +128,7 @@ class LossWeightsConfig: # Consolidated loss weights
 class Config:
     modelname: str = "MSK"
     version: str = "v1.0"
+    model_note: str = ""  # Additional note for the model, can be used for versioning or description
 
     # Model
     model_params_grid: GridParams = field(default_factory=GridParams) # Renamed to avoid confusion with GraphConfig
