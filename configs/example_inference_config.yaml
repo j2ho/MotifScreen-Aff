@@ -4,7 +4,7 @@
 
 # Protein input - absolute path to protein PDB file
 # protein_pdb: "/path/to/your/protein.pdb"
-'protein_pdb': '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/receptor.pdb'
+protein_pdb: '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/receptor.pdb'
 
 # Binding center specification - choose ONE of the following options:
 # Option 1: Provide explicit coordinates [x, y, z] in Angstroms
@@ -19,13 +19,14 @@ crystal_ligand: '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/crysta
 
 # Ligands for screening - batch MOL2 file 
 # ligands_file: "/path/to/batch_ligands.mol2"
-ligands_file: '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/actives_final.mol2'
+ligands_file: '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/decoys_final.mol2'
 
 # Trained model checkpoint
 model_path: "/home.galaxy4/j2ho/projects/MotifScreen-Aff/models/mskv1.0/best.pkl"
 
 # Output directory for all results and intermediate files
 output_dir: "./inference_output"
+save_aux: false  # set to true to save motif predictions, keyatom coordinate predictions
 
 # ===== OPTIONAL PARAMETERS =====
 
