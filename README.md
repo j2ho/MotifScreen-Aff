@@ -23,21 +23,21 @@ The inference pipeline allows users to:
 ### 1. Protein PDB File
 - Standard PDB format
 - Should contain the target protein structure
-- Can include crystal waters and other cofactors
+- Can include crystal waters and other cofactors ??? 수정필요 
 
 ### 2. Binding Center
 Choose **one** of the following options:
 
 **Option A: Explicit Coordinates**
 ```yaml
-center: [10.5, 15.2, 8.7]  # [x, y, z] in Angstroms
+center: [10.5, 15.2, 8.7]  
 ```
 
 **Option B: Crystal Ligand File**
 ```yaml
-crystal_ligand: "/path/to/crystal_ligand.pdb"   # PDB format
+crystal_ligand: "/path/to/crystal_ligand.pdb"   # PDB 
 # or
-crystal_ligand: "/path/to/crystal_ligand.mol2"  # MOL2 format
+crystal_ligand: "/path/to/crystal_ligand.mol2"  # MOL2 or PDB 
 ```
 The pipeline will automatically calculate the center of mass from the ligand coordinates.
 
