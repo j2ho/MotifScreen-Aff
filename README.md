@@ -17,6 +17,10 @@ The inference pipeline allows users to:
    ```bash
    python -m run_motifscreen --config your_config.yaml
    ```
+   Example run command (supports CPU run):
+   ```bash
+   python -m run_motifscreen --config configs/example_inference_config.yaml
+   ```
 
 ## Required Inputs
 
