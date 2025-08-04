@@ -15,7 +15,7 @@ The inference pipeline allows users to:
 1. **Prepare your config file** (see `example_inference_config.yaml`)
 2. **Run inference**:
    ```bash
-   python inference.py --config your_config.yaml
+   python -m run_motifscreen --config your_config.yaml
    ```
 
 ## Required Inputs
@@ -158,35 +158,26 @@ compound_234,0.698432,3
 ```bash
 # 1. Create config file
 cat > screening_config.yaml << EOF
-protein_pdb: "/data/protein.pdb"
+protein_pdb: "data/example/receptor.pdb"
 center: [10.5, 15.2, 8.7]
-ligands_file: "/data/compound_library.mol2"
-model_path: "/models/trained_model.pkl"
-output_dir: "./screening_results"
+ligands_file: "data/example/actives_final.mol2"
+model_path: "models/msk_v2.pkl"
+output_dir: "./virtual_screening"
 EOF
 
 # 2. Run inference
-python -m inference --config screening_config.yaml
+python -m run_motifscreen --config screening_config.yaml
 ```
 
 ### Using Crystal Ligand for Center
 ```yaml
-protein_pdb: "/data/1abc.pdb"
-center: "/data/1abc_ligand.pdb"  # Extract ligand from crystal structure
-ligands_file: "/data/virtual_library.mol2"
-model_path: "/models/msk_v2.pkl"
+protein_pdb: "data/example/receptor.pdb"
+crystal_ligand: "data/example/crystal_ligand.mol2"
+ligands_file: "data/example/actives_final.mol2"
+model_path: "models/msk_v2.pkl"
 output_dir: "./virtual_screening"
 ```
 
-## Performance Tips
-
-```yaml
-protein_pdb: "/data/1abc.pdb"
-center: "/data/1abc_ligand.pdb"  # Extract ligand from crystal structure
-ligands_file: "/data/virtual_library.mol2"
-model_path: "/models/msk_v2.pkl"
-output_dir: "./virtual_screening"
-```
 
 ## Performance Tips
 
@@ -213,12 +204,6 @@ export CUDA_VISIBLE_DEVICES=""
 
 **Model loading fails**: Ensure model checkpoint is compatible with the specified config
 
-### Debugging
-
-Enable verbose output by adding print statements or running with:
-```bash
-python -u inference.py --config config.yaml 2>&1 | tee inference.log
-```
 
 ## Integration with Training Pipeline
 
@@ -246,7 +231,7 @@ See `requirements.txt` for specific versions.
 
 If you use this inference pipeline, please cite:
 ```
-[Your MotifScreen-Aff paper citation]
+[future MotifScreen-Aff paper citation...]
 ```
 
 ## Support
