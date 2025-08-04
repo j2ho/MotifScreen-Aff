@@ -1,0 +1,69 @@
+# Example inference configuration for MotifScreen-Aff
+
+# ===== REQUIRED INPUTS =====
+
+# Protein input - absolute path to protein PDB file
+# protein_pdb: "/path/to/your/protein.pdb"
+'protein_pdb': '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/receptor.pdb'
+
+# Binding center specification - choose ONE of the following options:
+# Option 1: Provide explicit coordinates [x, y, z] in Angstroms
+# center: [10.5, 15.2, 8.7]
+
+# Option 2: Provide path to crystal ligand file (PDB or MOL2) to calculate center automatically
+# crystal_ligand: "/path/to/crystal_ligand.pdb" 
+# crystal_ligand: "/path/to/crystal_ligand.mol2"
+crystal_ligand: '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/crystal_ligand.mol2'
+
+# Note: If both center and crystal_ligand are provided, center takes priority
+
+# Ligands for screening - batch MOL2 file 
+# ligands_file: "/path/to/batch_ligands.mol2"
+ligands_file: '/home.galaxy4/j2ho/projects/MotifScreen-Aff/data/example/actives_final.mol2'
+
+# Trained model checkpoint
+model_path: "/home.galaxy4/j2ho/projects/MotifScreen-Aff/models/mskv1.0/best.pkl"
+
+# Output directory for all results and intermediate files
+output_dir: "./inference_output"
+
+# ===== OPTIONAL PARAMETERS =====
+
+# Grid generation parameters - don't change unless you know what you're doing
+gridsize: 1.5      # Grid spacing in Angstroms (default: 1.5)
+padding: 10.0      # Padding around center in Angstroms (default: 10.0)
+clash: 1.1         # Clash distance for grid filtering (default: 1.1)
+
+# Model configuration name (should match training config)
+config_name: "common"  
+
+# Inference batch size (number of ligands processed together)
+batch_size: 5 
+
+# ===== EXAMPLE USAGE =====
+# 1. Update the paths above to point to your actual files
+# 2. Run: python -m inference --config example_inference_config.yaml
+
+# ===== EXPECTED OUTPUTS =====
+# The pipeline will create the following files in output_dir:
+# - target.prop.npz          : Receptor features
+# - target.grid.npz          : Grid points around binding center  
+# - keyatom.def.npz          : Key atoms from ligands
+# - inference_results.json   : Complete results in JSON format
+# - binding_predictions.csv  : Ranked binding predictions
+# - motif_predictions.npy    : Motif predictions (if available)
+# - predicted_coordinates.npy: Coordinate predictions (if available)
+
+# ===== FILE FORMAT REQUIREMENTS =====
+# protein_pdb: Standard PDB format
+# ligands_file: 
+#   - MOL2: Batch file with multiple compounds
+#   - PDB: Single or multiple MODEL entries
+# center ligand: PDB or MOL2 format (single compound)
+
+# ===== NOTES =====
+# - All file paths should be absolute paths for reliability
+# - The model will automatically detect CUDA if available
+# - Grid points are generated around the specified center
+# - Key atoms are extracted using BRICS fragmentation
+# - Results are ranked by predicted binding affinity
