@@ -12,10 +12,17 @@ try:
 except ImportError:
     import src.io.protein_utils as myutils
 
+class CustomFormatter(logging.Formatter):
+    def format(self, record):
+        if record.levelno >= logging.ERROR:
+            return f"[ERROR] {record.getMessage()}"
+        else:
+            return f" {record.getMessage()}"
+
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
     handler = logging.StreamHandler()
-    formatter = logging.Formatter('[%(levelname)s] %(message)s')
+    formatter = CustomFormatter()
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
@@ -528,19 +535,7 @@ def calculate_ligand_com(ligand_file):
     
     return com
 
-mode = 'com'
 def runner(config_dict):
-    """
-    Enhanced runner that accepts a config dictionary with:
-    - protein_pdb: path to protein PDB file
-    - center: [x,y,z] coordinates (optional)
-    - crystal_ligand: path to crystal ligand file (optional)
-    - gridsize: grid spacing (default 1.5)
-    - padding: padding around center (default 10.0) 
-    - clash: clash distance (default 1.1)
-    
-    Priority: if both center and crystal_ligand provided, center takes priority
-    """
     pdb = config_dict['protein_pdb']
     center_coords = config_dict.get('center')
     crystal_ligand = config_dict.get('crystal_ligand')

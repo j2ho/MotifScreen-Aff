@@ -24,16 +24,6 @@ from src.data.dataset import MolecularLoader, GraphBuilder, collate
 logger = logging.getLogger(__name__)
 
 class InferenceDataSet(torch.utils.data.Dataset):
-    """
-    Inference dataset that accepts flexible file paths directly from user.
-    
-    Unlike TrainingDataSet, this doesn't rely on hardcoded directory structures
-    and allows users to specify exact paths to their files.
-    
-    For inference, all ligands are processed (no random subsampling) and batched
-    sequentially using the same receptor graph for each batch.
-    """
-    
     def __init__(self, 
                  protein_pdb: str,
                  prop_npz: str,
@@ -43,8 +33,6 @@ class InferenceDataSet(torch.utils.data.Dataset):
                  config: Config = None,
                  batch_size: int = None):
         """
-        Initialize inference dataset with direct file paths
-        
         Args:
             protein_pdb: Path to protein PDB file
             prop_npz: Path to receptor properties NPZ file  
