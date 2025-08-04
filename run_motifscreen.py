@@ -11,12 +11,17 @@ import time
 from pathlib import Path
 from typing import Dict
 
+# Distributed training imports
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 from src.io.protein_featurizer import runner as protein_runner
 from src.io.ligand_processer import launch_batched_ligand
 from src.data.dataset_inference import InferenceDataSet, collate
 from src.model.models.msk1 import EndtoEndModel as MSK_1
 from src.model.models.msk_v2 import EndtoEndModel as MSK_2
 from configs.config_loader import load_config_with_base, Config
+from scripts.train.utils import to_cuda
 
 import logging
 
@@ -27,33 +32,78 @@ class CustomFormatter(logging.Formatter):
         else:
             return f" {record.getMessage()}"
 
+class InfoHandler(logging.StreamHandler):
+    """Handler that sends INFO messages to stdout"""
+    def __init__(self):
+        super().__init__(sys.stdout)
+        
+    def emit(self, record):
+        if record.levelno < logging.ERROR:
+            super().emit(record)
+
+class ErrorHandler(logging.StreamHandler):
+    """Handler that sends ERROR+ messages to stderr"""
+    def __init__(self):
+        super().__init__(sys.stderr)
+        
+    def emit(self, record):
+        if record.levelno >= logging.ERROR:
+            super().emit(record)
+
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
-    handler = logging.StreamHandler()
+    # Create separate handlers for INFO (stdout) and ERROR (stderr)
+    info_handler = InfoHandler()
+    error_handler = ErrorHandler()
+    
     formatter = CustomFormatter()
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    info_handler.setFormatter(formatter)
+    error_handler.setFormatter(formatter)
+    
+    logger.addHandler(info_handler)
+    logger.addHandler(error_handler)
 logger.setLevel(logging.INFO)
 
 
 class MotifScreenInference:
     """Complete inference pipeline for MotifScreen-Aff"""
     
-    def __init__(self, config_file: str):
+    def __init__(self, config_file: str, rank: int = 0, world_size: int = 1):
         """Initialize with inference config file"""
         self.config_file = config_file
+        self.rank = rank
+        self.world_size = world_size
         self.inference_config = self._load_inference_config()
         self.model_config = self._load_model_config()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Multi-GPU setup for distributed inference
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{rank}")
+            torch.cuda.set_device(self.device)
+            self.num_gpus = torch.cuda.device_count()
+            if rank == 0:  # Only log from main process
+                logger.info(f"Found {self.num_gpus} GPU(s)")
+                for i in range(self.num_gpus):
+                    logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+                if world_size > 1:
+                    logger.info(f"Using distributed inference with {world_size} processes")
+        else:
+            self.device = torch.device("cpu")
+            self.num_gpus = 0
+            if rank == 0:
+                logger.info("Using CPU")
+            
         self.model = None
         
-        # Create output directory
-        self.output_dir = Path(self.inference_config['output_dir'])
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Create output directory (only on main process)
+        if rank == 0:
+            self.output_dir = Path(self.inference_config['output_dir'])
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Using output directory: {self.output_dir}")
+        else:
+            self.output_dir = Path(self.inference_config['output_dir'])
+            
         self.save_aux = self.inference_config.get('save_aux', False)
-
-        logger.info(f"Inference initialized. Device: {self.device}")
-        logger.info(f"Using output directory: {self.output_dir}")
         
     def _load_inference_config(self) -> Dict:
         """Load inference configuration from YAML"""
@@ -189,9 +239,16 @@ class MotifScreenInference:
         # Load state dict
         self.model.load_state_dict(state_dict, strict=False)
         self.model.to(self.device)
-        self.model.eval()
         
-        logger.info("Model loaded successfully")
+        # Enable DDP for multi-GPU inference
+        if self.world_size > 1:
+            if self.rank == 0:
+                logger.info(f"Wrapping model with DistributedDataParallel for {self.world_size} processes")
+            self.model = DDP(self.model, device_ids=[self.rank])
+        
+        self.model.eval()
+        if self.rank == 0:
+            logger.info("Model loaded successfully")
         
     def create_dataset(self, prop_file: str, grid_file: str, keyatom_file: str) -> InferenceDataSet:
         """Create inference dataset"""
@@ -199,8 +256,10 @@ class MotifScreenInference:
         logger.info("Step 4: Creating inference dataset...")
         logger.info("="*60)
 
-        # Get batch size from config or use default
-        batch_size = self.inference_config.get('batch_size', self.model_config.processing.max_subset)
+        # Get batch size from config or use default, scale with number of GPUs
+        base_batch_size = self.inference_config.get('batch_size', self.model_config.processing.max_subset)
+        # Scale batch size by number of GPUs for better utilization
+        effective_batch_size = base_batch_size * max(1, self.num_gpus)
         
         dataset = InferenceDataSet(
             protein_pdb=self.inference_config['protein_pdb'],
@@ -209,10 +268,14 @@ class MotifScreenInference:
             keyatom_npz=keyatom_file,
             ligands_file=self.inference_config['ligands_file'],
             config=self.model_config,
-            batch_size=batch_size
+            batch_size=effective_batch_size
         )
 
-        logger.info(f"Dataset created with {dataset.total_ligands} ligands in {dataset.num_batches} batches")
+        if self.num_gpus > 1:
+            logger.info(f"Dataset created with {dataset.total_ligands} ligands in {dataset.num_batches} batches")
+            logger.info(f"  Base batch size: {base_batch_size}, Effective batch size: {effective_batch_size} (scaled for {self.num_gpus} GPUs)")
+        else:
+            logger.info(f"Dataset created with {dataset.total_ligands} ligands in {dataset.num_batches} batches")
         return dataset
         
     def run_inference(self, dataset: InferenceDataSet) -> Dict:
@@ -225,10 +288,16 @@ class MotifScreenInference:
             logger.error("Model not loaded. Call load_model() first.")
             raise RuntimeError
             
-        # Create dataloader
-        from torch.utils.data import DataLoader
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False, 
-                              collate_fn=collate, num_workers=0)
+        # Create dataloader with distributed sampling if using multiple processes
+        from torch.utils.data import DataLoader, DistributedSampler
+        
+        if self.world_size > 1:
+            sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=self.rank, shuffle=False)
+            dataloader = DataLoader(dataset, batch_size=1, sampler=sampler, 
+                                  collate_fn=collate, num_workers=0)
+        else:
+            dataloader = DataLoader(dataset, batch_size=1, shuffle=False, 
+                                  collate_fn=collate, num_workers=0)
         
         results = {
             'ligands': [],
@@ -257,14 +326,24 @@ class MotifScreenInference:
                         print(f"✗ Skipping batch {batch_idx} (missing components)")
                         continue
                     
-                    # Move to device
-                    Grec = Grec.to(self.device)
-                    Glig = Glig.to(self.device) if Glig is not None else None
-                    keyidx = [ki.to(self.device) if torch.is_tensor(ki) else ki for ki in keyidx] if keyidx is not None else None
+                    # Move to device using to_cuda utility for proper DGL graph handling
+                    Grec = to_cuda(Grec, self.device)
+                    Glig = to_cuda(Glig, self.device) if Glig is not None else None
+                    keyidx = to_cuda(keyidx, self.device) if keyidx is not None else None
                     grididx = grididx.to(self.device)
                     
                     batch_ligands = info['ligands'][0] if 'ligands' in info else []
                     logger.info(f"Processing batch {batch_idx}/{len(dataloader)-1} with {len(batch_ligands)} ligands...")  
+                    
+                    # Log GPU memory usage for multi-GPU setups
+                    if self.num_gpus > 1 and batch_idx % 10 == 0:  # Every 10 batches
+                        memory_info = []
+                        for i in range(self.num_gpus):
+                            allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
+                            cached = torch.cuda.memory_reserved(i) / 1024**3     # GB
+                            memory_info.append(f"GPU{i}: {allocated:.1f}GB/{cached:.1f}GB")
+                        logger.info(f"  Memory usage: {', '.join(memory_info)}")
+                    
                     # logger.info(f"  Receptor nodes: {Grec.number_of_nodes()}")
                     # logger.info(f"  Ligand nodes: {Glig.number_of_nodes() if Glig is not None else 0}")
                     # logger.info(f"  Grid points: {len(grididx)}")
@@ -304,6 +383,29 @@ class MotifScreenInference:
                     import traceback
                     traceback.print_exc()
                     continue
+        
+        # Gather results from all processes if using distributed inference
+        if self.world_size > 1:
+            # Collect results from all processes
+            all_ligands = [None] * self.world_size
+            all_binding_scores = [None] * self.world_size
+            
+            dist.all_gather_object(all_ligands, results['ligands'])
+            dist.all_gather_object(all_binding_scores, results['binding_scores'])
+            
+            if self.rank == 0:
+                # Combine results from all processes
+                combined_ligands = []
+                combined_scores = []
+                for ligands, scores in zip(all_ligands, all_binding_scores):
+                    combined_ligands.extend(ligands)
+                    combined_scores.extend(scores)
+                
+                results['ligands'] = combined_ligands
+                results['binding_scores'] = combined_scores
+                
+                logger.info(f"Gathered results from {self.world_size} processes")
+                logger.info(f"Total ligands processed: {len(combined_ligands)}")
         
         return results
         
@@ -420,6 +522,22 @@ class MotifScreenInference:
             raise
 
 
+def run_inference_worker(rank: int, world_size: int, config_file: str):
+    """Worker function for distributed inference"""
+    # Initialize distributed process group
+    if world_size > 1:
+        os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', 'localhost')
+        os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12000')
+        dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
+    
+    # Run inference
+    inference = MotifScreenInference(config_file, rank, world_size)
+    inference.run_complete_pipeline()
+    
+    # Clean up distributed process group
+    if world_size > 1:
+        dist.destroy_process_group()
+
 def main():
     parser = argparse.ArgumentParser(description='MotifScreen-Aff Complete Inference Pipeline')
     parser.add_argument('--config', type=str, required=True,
@@ -431,9 +549,16 @@ def main():
     if not os.path.exists(args.config):
         raise FileNotFoundError(f"Config file not found: {args.config}")
     
-    # Run inference
-    inference = MotifScreenInference(args.config)
-    inference.run_complete_pipeline()
+    # Check for multi-GPU setup
+    world_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    
+    if world_size > 1:
+        # Use multiprocessing spawn for distributed inference
+        import torch.multiprocessing as mp
+        mp.spawn(run_inference_worker, args=(world_size, args.config), nprocs=world_size, join=True)
+    else:
+        # Single GPU/CPU inference
+        run_inference_worker(0, 1, args.config)
 
 
 if __name__ == "__main__":
