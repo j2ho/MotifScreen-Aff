@@ -327,16 +327,16 @@ class MotifScreenInference:
             ligand_scores.sort(key=lambda x: x[1], reverse=True)
             
             with open(csv_file, 'w') as f:
-                f.write("molecule_name,binding_score,rank\n")
+                f.write("rank,compound,binding_score\n")
                 for rank, (ligand, score) in enumerate(ligand_scores, 1):
-                    f.write(f"{ligand},{score:.6f},{rank}\n")
+                    f.write(f"{rank},{ligand},{score:.6f}\n")
                     
             print(f"✓ Binding predictions CSV: {csv_file}")
             
             # Print top 10 predictions
             print("\nTop 10 binding predictions:")
             print("-" * 50)
-            print(f"{'Rank':<6} {'Molecule':<20} {'Score':<10}")
+            print(f"{'Rank':<6} {'Compound':<20} {'Score':<10}")
             print("-" * 50)
             for rank, (ligand, score) in enumerate(ligand_scores[:10], 1):
                 print(f"{rank:<6} {ligand:<20} {score:<10.6f}")

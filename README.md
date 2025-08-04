@@ -138,10 +138,10 @@ The pipeline generates several output files in the specified `output_dir`:
 
 ### Binding Predictions (`binding_predictions.csv`)
 ```csv
-ligand_name,binding_score,rank  
-compound_123,0.856743,1
-compound_089,0.742156,2
-compound_234,0.698432,3
+rank,compound,binding_score
+1,compound_123,0.856743
+2,compound_089,0.742156
+3,compound_234,0.698432
 ...
 ```
 - **binding_score**: Predicted binding probability (0-1)
