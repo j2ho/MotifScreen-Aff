@@ -1,35 +1,15 @@
 #!/usr/bin/env python
-"""
-Complete inference pipeline for MotifScreen-Aff model.
-
-Users provide a config YAML file with:
-- protein_pdb: Path to protein PDB file
-- center: Either [x, y, z] coordinates or path to crystal ligand file
-- ligands_file: Path to batch MOL2 or PDB file containing ligands to screen
-- model_path: Path to trained model checkpoint
-- output_dir: Directory to save results and intermediate files
-
-The pipeline will:
-1. Process protein PDB and generate receptor features (prop.npz) 
-2. Generate grid points around binding center (grid.npz)
-3. Process ligands to extract key atoms (keyatom.def.npz)
-4. Create inference dataset with flexible file paths
-5. Load trained model and run inference
-6. Output binding predictions and motif predictions
-"""
 
 import os
 import sys
 import argparse
-import yaml
 import numpy as np
 import torch
+import yaml
 import json
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
-
-# Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+from typing import Dict
 
 from src.io.protein_featurizer import runner as protein_runner
 from src.io.ligand_processer import launch_batched_ligand
@@ -37,6 +17,23 @@ from src.data.dataset_inference import InferenceDataSet, collate
 from src.model.models.msk1 import EndtoEndModel as MSK_1
 from src.model.models.msk_v2 import EndtoEndModel as MSK_2
 from configs.config_loader import load_config_with_base, Config
+
+import logging
+
+class CustomFormatter(logging.Formatter):
+    def format(self, record):
+        if record.levelno >= logging.ERROR:
+            return f"[ERROR] {record.getMessage()}"
+        else:
+            return f" {record.getMessage()}"
+
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler()
+    formatter = CustomFormatter()
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
 class MotifScreenInference:
@@ -53,8 +50,10 @@ class MotifScreenInference:
         # Create output directory
         self.output_dir = Path(self.inference_config['output_dir'])
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        print(f"Inference initialized. Device: {self.device}")
+        self.save_aux = self.inference_config.get('save_aux', False)
+
+        logger.info(f"Inference initialized. Device: {self.device}")
+        logger.info(f"Using output directory: {self.output_dir}")
         
     def _load_inference_config(self) -> Dict:
         """Load inference configuration from YAML"""
@@ -65,12 +64,14 @@ class MotifScreenInference:
         required_fields = ['protein_pdb', 'ligands_file', 'model_path', 'output_dir']
         for field in required_fields:
             if field not in config:
-                raise ValueError(f"Missing required field in config: {field}")
+                logger.error(f"Missing required field in config: {field}")
+                raise ValueError
                 
         # Validate that either center or crystal_ligand is provided
         if 'center' not in config and 'crystal_ligand' not in config:
-            raise ValueError("Either 'center' coordinates or 'crystal_ligand' file must be provided in config")
-                
+            logger.error("Either 'center' coordinates or 'crystal_ligand' file must be provided in config")
+            raise ValueError
+
         return config
         
     def _load_model_config(self) -> Config:
@@ -79,15 +80,14 @@ class MotifScreenInference:
         try:
             return load_config_with_base(config_name)
         except FileNotFoundError:
-            print(f"Model config '{config_name}' not found. Using default config.")
+            logger.error(f"Model config '{config_name}' not found. Using default config.")
             return Config()
             
     def process_protein_and_grid(self) -> tuple[str, str]:
-        """Process protein PDB and generate grid using enhanced runner"""
-        print("="*60)
-        print("Step 1: Processing protein and generating grid...")
-        print("="*60)
-        
+        logger.info("="*60)
+        logger.info("Step 1: Processing protein and generating grid...")
+        logger.info("="*60)
+
         # Prepare config for protein_featurizer runner
         runner_config = {
             'protein_pdb': self.inference_config['protein_pdb'],
@@ -110,30 +110,30 @@ class MotifScreenInference:
             prop_file = f"{output_prefix}.prop.npz"
             grid_file = f"{output_prefix}.grid.npz"
             
-            # Verify files were created
             if not os.path.exists(prop_file):
                 raise FileNotFoundError(f"Receptor properties file not created: {prop_file}")
             if not os.path.exists(grid_file):
                 raise FileNotFoundError(f"Grid file not created: {grid_file}")
-                
-            print(f"✓ Receptor features saved: {prop_file}")
-            print(f"✓ Grid points saved: {grid_file}")
-            
+
+            logger.info(f"Receptor properties saved to: {prop_file}")
+            logger.info(f"Grid points saved to: {grid_file}")
+
             return prop_file, grid_file
             
         except Exception as e:
-            print(f"✗ Error during protein processing: {e}")
+            logger.error(f"Failed to calculate features for protein: {e}")
             raise
             
     def process_ligands(self) -> str:
         """Process ligands to extract key atoms"""
-        print("="*60)
-        print("Step 2: Processing ligands...")
-        print("="*60)
-        
+        logger.info("="*60)
+        logger.info("Step 2: Processing ligands...")
+        logger.info("="*60)
+
         ligands_file = self.inference_config['ligands_file']
         if not os.path.exists(ligands_file):
-            raise FileNotFoundError(f"Ligands file not found: {ligands_file}")
+            logger.error(f"Ligands file not found: {ligands_file}")
+            raise FileNotFoundError
             
         keyatom_file = self.output_dir / "keyatom.def.npz"
         
@@ -141,36 +141,39 @@ class MotifScreenInference:
             launch_batched_ligand(ligands_file, N=4, collated_npz=str(keyatom_file))
             
             if not os.path.exists(keyatom_file):
-                raise FileNotFoundError(f"Key atoms file not created: {keyatom_file}")
-                
-            print(f"✓ Key atoms extracted: {keyatom_file}")
+                logger.error(f"Key atoms file not created: {keyatom_file}")
+                raise FileNotFoundError
+
+            logger.info(f"Key atoms saved to: {keyatom_file}")
             return str(keyatom_file)
             
         except Exception as e:
-            print(f"✗ Error during ligand processing: {e}")
+            logger.error(f"Error during ligand processing: {e}")
             raise
             
     def load_model(self):
         """Load the trained model from checkpoint"""
-        print("="*60)
-        print("Step 3: Loading trained model...")
-        print("="*60)
-        
+        logger.info("="*60)
+        logger.info("Step 3: Loading trained model...")
+        logger.info("="*60)
+
         model_path = self.inference_config['model_path']
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
-            
-        print(f"Loading model from: {model_path}")
-        print(f"Model version: {self.model_config.version}")
-        
+            logger.error(f"Model checkpoint not found: {model_path}")
+            raise FileNotFoundError
+
+        logger.info(f"Loading model from: {model_path}")
+        logger.info(f"Model version: {self.model_config.version}")
+
         # Initialize model
         if self.model_config.version == "v1.0":
             self.model = MSK_1(self.model_config)
         elif self.model_config.version == "v2.0":
             self.model = MSK_2(self.model_config)
         else:
-            raise ValueError(f"Unsupported model version: {self.model_config.version}")
-            
+            logger.error(f"Unsupported model version: {self.model_config.version}")
+            raise ValueError
+
         # Load checkpoint
         checkpoint = torch.load(model_path, map_location=self.device)
         
@@ -188,14 +191,14 @@ class MotifScreenInference:
         self.model.to(self.device)
         self.model.eval()
         
-        print("✓ Model loaded successfully")
+        logger.info("Model loaded successfully")
         
     def create_dataset(self, prop_file: str, grid_file: str, keyatom_file: str) -> InferenceDataSet:
         """Create inference dataset"""
-        print("="*60)
-        print("Step 4: Creating inference dataset...")
-        print("="*60)
-        
+        logger.info("="*60)
+        logger.info("Step 4: Creating inference dataset...")
+        logger.info("="*60)
+
         # Get batch size from config or use default
         batch_size = self.inference_config.get('batch_size', self.model_config.processing.max_subset)
         
@@ -208,18 +211,19 @@ class MotifScreenInference:
             config=self.model_config,
             batch_size=batch_size
         )
-        
-        print(f"✓ Dataset created with {dataset.total_ligands} ligands in {dataset.num_batches} batches")
+
+        logger.info(f"Dataset created with {dataset.total_ligands} ligands in {dataset.num_batches} batches")
         return dataset
         
     def run_inference(self, dataset: InferenceDataSet) -> Dict:
         """Run model inference on the dataset"""
-        print("="*60)
-        print("Step 5: Running model inference...")
-        print("="*60)
-        
+        logger.info("="*60)
+        logger.info("Step 5: Running model inference...")
+        logger.info("="*60)
+
         if self.model is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+            logger.error("Model not loaded. Call load_model() first.")
+            raise RuntimeError
             
         # Create dataloader
         from torch.utils.data import DataLoader
@@ -260,11 +264,11 @@ class MotifScreenInference:
                     grididx = grididx.to(self.device)
                     
                     batch_ligands = info['ligands'][0] if 'ligands' in info else []
-                    print(f"Processing batch {batch_idx}/{len(dataloader)-1} with {len(batch_ligands)} ligands...")
-                    print(f"  Receptor nodes: {Grec.number_of_nodes()}")
-                    print(f"  Ligand nodes: {Glig.number_of_nodes() if Glig is not None else 0}")
-                    print(f"  Grid points: {len(grididx)}")
-                    
+                    logger.info(f"Processing batch {batch_idx}/{len(dataloader)-1} with {len(batch_ligands)} ligands...")  
+                    # logger.info(f"  Receptor nodes: {Grec.number_of_nodes()}")
+                    # logger.info(f"  Ligand nodes: {Glig.number_of_nodes() if Glig is not None else 0}")
+                    # logger.info(f"  Grid points: {len(grididx)}")
+
                     # Run inference
                     keyxyz_pred, key_pairdist_pred, rec_key_z, motif_pred, bind_pred, absaff_pred = self.model(
                         Grec, Glig, keyidx, grididx,
@@ -276,27 +280,27 @@ class MotifScreenInference:
                     if bind_pred is not None and len(bind_pred) > 0:
                         binding_scores = torch.sigmoid(bind_pred[0]).cpu().numpy()
                         results['binding_scores'].extend(binding_scores.tolist())
-                        print(f"✓ Binding predictions: {len(binding_scores)} ligands")
-                        
-                    # Process motif predictions (only save from first batch to avoid huge files)
-                    if motif_pred is not None and batch_idx == 0:
+                        logger.info(f"Binding predictions: {len(binding_scores)} ligands")
+
+                    # Process motif predictions 
+                    if self.save_aux and motif_pred is not None:
                         motif_scores = torch.sigmoid(motif_pred).cpu().numpy()
                         results['motif_predictions'] = motif_scores.tolist()
-                        print(f"✓ Motif predictions saved: {motif_scores.shape}")
-                        
-                    # Process coordinate predictions (only save from first batch)
-                    if keyxyz_pred is not None and batch_idx == 0:
+                        logger.info(f"Motif predictions saved: {motif_scores.shape}")
+
+                    # Process coordinate predictions 
+                    if self.save_aux and keyxyz_pred is not None:
                         pred_coords = keyxyz_pred.cpu().numpy()
                         results['predicted_coordinates'] = pred_coords.tolist()
-                        print(f"✓ Coordinate predictions saved: {pred_coords.shape}")
-                        
+                        logger.info(f"Coordinate predictions saved: {pred_coords.shape}")
+
                     # Collect ligand information
                     results['ligands'].extend(batch_ligands)
-                    
-                    print(f"✓ Processed batch {batch_idx} successfully")
+
+                    logger.info(f"Processed batch {batch_idx} successfully")
                     
                 except Exception as e:
-                    print(f"✗ Error processing batch {batch_idx}: {e}")
+                    logger.error(f"Error processing batch {batch_idx}: {e}")
                     import traceback
                     traceback.print_exc()
                     continue
@@ -305,15 +309,15 @@ class MotifScreenInference:
         
     def save_results(self, results: Dict):
         """Save inference results to files"""
-        print("="*60)
-        print("Step 6: Saving results...")
-        print("="*60)
-        
+        logger.info("="*60)
+        logger.info("Step 6: Saving results...")
+        logger.info("="*60)
+
         # Save complete results as JSON
         results_file = self.output_dir / "inference_results.json"
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"✓ Complete results saved: {results_file}")
+        logger.info(f"Complete results saved: {results_file}")
         
         # Save binding predictions as CSV
         if results['ligands'] and results['binding_scores']:
@@ -330,46 +334,48 @@ class MotifScreenInference:
                 f.write("rank,compound,binding_score\n")
                 for rank, (ligand, score) in enumerate(ligand_scores, 1):
                     f.write(f"{rank},{ligand},{score:.6f}\n")
-                    
-            print(f"✓ Binding predictions CSV: {csv_file}")
-            
+
+            logger.info(f"Binding predictions CSV: {csv_file}")
+
             # Print top 10 predictions
-            print("\nTop 10 binding predictions:")
-            print("-" * 50)
-            print(f"{'Rank':<6} {'Compound':<20} {'Score':<10}")
-            print("-" * 50)
+            logger.info("\nTop 10 binding predictions:")
+            logger.info("-" * 50)
+            logger.info(f"{'Rank':<6} {'Compound':<20} {'Score':<10}")
+            logger.info("-" * 50)
             for rank, (ligand, score) in enumerate(ligand_scores[:10], 1):
-                print(f"{rank:<6} {ligand:<20} {score:<10.6f}")
+                logger.info(f"{rank:<6} {ligand:<20} {score:<10.6f}")
         
-        # Save motif predictions if available
-        if results['motif_predictions']:
-            motif_file = self.output_dir / "motif_predictions.npy"
-            np.save(motif_file, np.array(results['motif_predictions']))
-            print(f"✓ Motif predictions saved: {motif_file}")
+        if self.save_aux:
+            # Save motif predictions if available
+            if results['motif_predictions']:
+                motif_file = self.output_dir / "motif_predictions.npy"
+                np.save(motif_file, np.array(results['motif_predictions']))
+                logger.info(f"Motif predictions saved: {motif_file}")
             
-        # Save coordinate predictions if available  
-        if results['predicted_coordinates']:
-            coords_file = self.output_dir / "predicted_coordinates.npy"
-            np.save(coords_file, np.array(results['predicted_coordinates']))
-            print(f"✓ Coordinate predictions saved: {coords_file}")
+            # # Save coordinate predictions if available  
+            if results['predicted_coordinates']:
+                coords_file = self.output_dir / "predicted_coordinates.npy"
+                np.save(coords_file, np.array(results['predicted_coordinates']))
+                logger.info(f"Coordinate predictions saved: {coords_file}")
             
     def run_complete_pipeline(self):
         """Run the complete inference pipeline"""
-        print("MotifScreen-Aff Inference Pipeline")
-        print("="*60)
-        print(f"Config file: {self.config_file}")
-        print(f"Protein PDB: {self.inference_config['protein_pdb']}")
-        
+        start_time = time.time()
+        logger.info("MotifScreen-Aff Inference Pipeline")
+        logger.info("="*60)
+        logger.info(f"Config file: {self.config_file}")
+        logger.info(f"Protein PDB: {self.inference_config['protein_pdb']}")
+
         # Print center info based on what's provided
         if 'center' in self.inference_config:
-            print(f"Binding center: {self.inference_config['center']}")
+            logger.info(f"Binding center: {self.inference_config['center']}")
         if 'crystal_ligand' in self.inference_config:
-            print(f"Crystal ligand: {self.inference_config['crystal_ligand']}")
-            
-        print(f"Ligands file: {self.inference_config['ligands_file']}")
-        print(f"Model path: {self.inference_config['model_path']}")
-        print(f"Output directory: {self.output_dir}")
-        print("="*60)
+            logger.info(f"Crystal ligand: {self.inference_config['crystal_ligand']}")
+
+        logger.info(f"Ligands file: {self.inference_config['ligands_file']}")
+        logger.info(f"Model path: {self.inference_config['model_path']}")
+        logger.info(f"Output directory: {self.output_dir}")
+        logger.info("="*60)
         
         try:
             # Step 1 & 2: Process protein and ligands
@@ -388,20 +394,27 @@ class MotifScreenInference:
             # Step 6: Save results
             self.save_results(results)
             
-            print("="*60)
-            print("✓ Inference pipeline completed successfully!")
-            print("="*60)
-            print(f"Results saved in: {self.output_dir}")
-            print(f"- Complete results: {self.output_dir}/inference_results.json")
-            print(f"- Binding predictions: {self.output_dir}/binding_predictions.csv")
-            if results['motif_predictions']:
-                print(f"- Motif predictions: {self.output_dir}/motif_predictions.npy")
-            if results['predicted_coordinates']:
-                print(f"- Coordinate predictions: {self.output_dir}/predicted_coordinates.npy")
-            print("="*60)
+            # Calculate and display runtime
+            end_time = time.time()
+            total_runtime = end_time - start_time
+            logger.info("="*60)
+            logger.info("Inference pipeline completed successfully!")
+            logger.info("="*60)
+            logger.info(f"Results saved in: {self.output_dir}")
+            logger.info(f"- Complete results: {self.output_dir}/inference_results.json")
+            logger.info(f"- Binding predictions: {self.output_dir}/binding_predictions.csv")
+            if self.save_aux and results['motif_predictions']:
+                logger.info(f"- Motif predictions: {self.output_dir}/motif_predictions.npy")
+            if self.save_aux and results['predicted_coordinates']:
+                logger.info(f"- Coordinate predictions: {self.output_dir}/predicted_coordinates.npy")
+            logger.info("="*60)
+            logger.info(f"Total runtime: {total_runtime:.2f} seconds ({total_runtime/60:.1f} minutes)")
+            logger.info("="*60)
             
         except Exception as e:
-            print(f"✗ Pipeline failed: {e}")
+            end_time = time.time()
+            total_runtime = end_time - start_time
+            logger.error(f"Pipeline failed after {total_runtime:.2f} seconds: {e}")
             import traceback
             traceback.print_exc()
             raise
