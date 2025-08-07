@@ -39,8 +39,6 @@ def MaskedBCE(cats,preds,masks,debug=False):
         Q = pred[-ngrid:]
 
         a = -cat*torch.log(Q+1.0e-6) #-PlogQ
-        # old -- cated ones still has < 1.0 thus penalized
-        #b = -(1.0-cat)*torch.log((1.0-Q)+1.0e-6)
         icat = (cat<0.001).float()
 
         #catG = grouped_cat(cat,device) # no such thing in ligand
