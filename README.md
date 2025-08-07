@@ -1,3 +1,10 @@
+# MotifScreen Training 
+
+## Overview
+
+1. **See `run.sh` ** 
+2. Basic configurations are provided in `configs/` directory: see `configs/common.yaml`
+
 # MotifScreen-Aff Inference Pipeline
 
 This document describes how to use the MotifScreen-Aff inference pipeline for virtual screening and binding prediction.
