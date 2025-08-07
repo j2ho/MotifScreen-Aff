@@ -25,7 +25,6 @@ class TriangleProteinToCompound(torch.nn.Module):
     def forward(self, z, protein_pair, compound_pair, z_mask):
         # z of shape b, i, j, embedding_channels, where i is protein dim, j is compound dim.
         # z_mask : torch.Size([b, i, j, 1])
-
         z = self.layernorm(z)
 
         protein_pair = self.layernorm(protein_pair)
@@ -119,6 +118,12 @@ class TriangleSelfAttentionRowWise(torch.nn.Module):
     def forward(self, z, z_mask):
         # z[b,i,j,:] = interaction features between grid point i and ligand atom j in batch b
         z = self.layernorm(z)
+        
+        # Check for NaN after layernorm
+        if torch.isnan(z).any():
+            print("WARNING: NaN detected in TriangleSelfAttentionRowWise after layernorm")
+            z = torch.nan_to_num(z, nan=0.0, posinf=1e6, neginf=-1e6)
+        
         p_length = z.shape[1]
         batch_n = z.shape[0]
         z_i = z
@@ -127,9 +132,26 @@ class TriangleSelfAttentionRowWise(torch.nn.Module):
         q = self.reshape_last_dim(self.linear_q(z_i)) 
         k = self.reshape_last_dim(self.linear_k(z_i))
         v = self.reshape_last_dim(self.linear_v(z_i))
+        
         # h = self.all_head_size, c = attention_head_size
         logits = torch.einsum('biqhc,bikhc->bihqk', q, k) + attention_mask_i
+        
+        # Check for NaN in attention logits and add numerical stability
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            print("WARNING: NaN/Inf detected in attention logits")
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=1e6, neginf=-1e6)
+        
+        # Add attention scaling for numerical stability
+        scale = 1.0 / (self.attention_head_size ** 0.5)
+        logits = logits * scale
+        
         weights = nn.Softmax(dim=-1)(logits)
+        
+        # Check attention weights
+        if torch.isnan(weights).any():
+            print("WARNING: NaN detected in attention weights")
+            weights = torch.nan_to_num(weights, nan=0.0)
+        
         weighted_avg = torch.einsum('bihqk,bikhc->biqhc', weights, v)
         g = self.reshape_last_dim(self.g(z_i)).sigmoid()
         output = g * weighted_avg
@@ -137,6 +159,12 @@ class TriangleSelfAttentionRowWise(torch.nn.Module):
         output = output.view(*new_output_shape)
         z = output
         z = self.final_linear(z) * z_mask.unsqueeze(-1)
+        
+        # Final NaN check
+        if torch.isnan(z).any():
+            print("WARNING: NaN detected in TriangleSelfAttentionRowWise output")
+            z = torch.nan_to_num(z, nan=0.0)
+        
         return z
 
 
@@ -182,11 +210,31 @@ class TrigonModule(nn.Module):
         # hs_rec: B x Nmax x d
         # hs_lig: B x Mmax x d
 
+        # Check inputs for NaN
+        if torch.isnan(hs_rec).any():
+            print("WARNING: NaN detected in TrigonModule input hs_rec")
+            hs_rec = torch.nan_to_num(hs_rec, nan=0.0)
+        if torch.isnan(hs_lig).any():
+            print("WARNING: NaN detected in TrigonModule input hs_lig")
+            hs_lig = torch.nan_to_num(hs_lig, nan=0.0)
+
         # process features
         hs_rec = self.Wrs(hs_rec)
         hs_lig = self.Wls(hs_lig)
+        
+        # Check after linear projections
+        if torch.isnan(hs_rec).any() or torch.isnan(hs_lig).any():
+            print("WARNING: NaN detected after TrigonModule linear projections")
+            hs_rec = torch.nan_to_num(hs_rec, nan=0.0)
+            hs_lig = torch.nan_to_num(hs_lig, nan=0.0)
+        
         # initial pairwise features
         z = torch.einsum('bnd,bmd->bnmd', hs_rec, hs_lig )
+        
+        # Check initial z
+        if torch.isnan(z).any():
+            print("WARNING: NaN detected in initial TrigonModule pairwise features")
+            z = torch.nan_to_num(z, nan=0.0)
 
         # trigonometry part
         for i_module in range(self.n_trigonometry_module_stack):
@@ -203,13 +251,36 @@ class TrigonModule(nn.Module):
                 # distance aware cross attention
                 zadd = self.protein_to_compound_list[i_module](z, D_rec, D_lig, z_mask.unsqueeze(-1))
                 if drop_out: zadd = self.dropout(zadd)
+                
+                # Check zadd for NaN
+                if torch.isnan(zadd).any():
+                    print(f"WARNING: NaN detected in TrigonModule cross-attention layer {i_module}")
+                    zadd = torch.nan_to_num(zadd, nan=0.0)
+                
                 z = z + zadd
+                
                 # triangle self attention
                 zadd = self.triangle_self_attention_list[i_module](z, z_mask)
                 if drop_out: zadd = self.dropout(zadd)
+                
+                # Check zadd for NaN
+                if torch.isnan(zadd).any():
+                    print(f"WARNING: NaN detected in TrigonModule self-attention layer {i_module}")
+                    zadd = torch.nan_to_num(zadd, nan=0.0)
+                
                 z = z + zadd
+
+            # Check z before transition
+            if torch.isnan(z).any():
+                print(f"WARNING: NaN detected in TrigonModule before transition layer {i_module}")
+                z = torch.nan_to_num(z, nan=0.0)
 
             # norm -> linear -> relu -> linear
             z = self.transition(z)
+            
+            # Check z after transition
+            if torch.isnan(z).any():
+                print(f"WARNING: NaN detected in TrigonModule after transition layer {i_module}")
+                z = torch.nan_to_num(z, nan=0.0)
 
         return z
