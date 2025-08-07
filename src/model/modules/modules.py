@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import time
 from src.model.utils import to_dense_batch, make_batch_vec, masked_softmax
 
 class StructModule( nn.Module ):
@@ -8,16 +9,20 @@ class StructModule( nn.Module ):
         self.lastlinearlayer = nn.Linear(m,1)
         self.scale = 1.0 # num_head #1.0/np.sqrt(float(d))
 
-    def forward( self, z, z_mask, Grec, key_mask ):
+    def forward( self, z, z_mask, Grec, key_mask, batchvec_rec_cached=None, r_coords_batched_cached=None ):
         # for structureloss
         z = self.lastlinearlayer(z).squeeze(-1) #real17 ext15
         z = masked_softmax(self.scale*z, mask=z_mask, dim = 1)
 
-        # final processing
-        batchvec_rec = make_batch_vec(Grec.batch_num_nodes()).to(Grec.device)
-        # r_coords_batched: B x Nmax x 3
-        x = Grec.ndata['x'].squeeze()
-        r_coords_batched, _ = to_dense_batch(x, batchvec_rec) # time consuming!!
+        # use cached values if available
+        if batchvec_rec_cached is not None and r_coords_batched_cached is not None:
+            r_coords_batched = r_coords_batched_cached
+        else:
+            # Fallback 
+            batchvec_rec = make_batch_vec(Grec.batch_num_nodes()).to(Grec.device)
+            # r_coords_batched: B x Nmax x 3
+            x = Grec.ndata['x'].squeeze()
+            r_coords_batched, _ = to_dense_batch(x, batchvec_rec) # time consuming!!
 
         Ykey_s = torch.einsum("bij,bic->bjc",z,r_coords_batched) # "Weighted sum":  i x j , i x 3 -> j x 3
         Ykey_s = [l for l in Ykey_s]
@@ -25,7 +30,6 @@ class StructModule( nn.Module ):
 
         key_mask = key_mask[:,:,None].repeat(1,1,3).float() #b x K x 3; "which Ks are used for each b"
         Ykey_s = Ykey_s * key_mask # b x K x 3 * b x
-
         return Ykey_s, z #B x ? x ?
 
 
