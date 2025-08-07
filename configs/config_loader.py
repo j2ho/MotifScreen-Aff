@@ -85,6 +85,7 @@ class TRParams:
     shared_trigon: bool = False
     normalize_Xform: bool = True
     lig_to_key_attn: bool = True
+    trigon_module: str = 'trigon'  # 'optimized' or 'trigon'
 
 @dataclass
 class AffModuleParams:
