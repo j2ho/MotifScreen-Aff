@@ -252,6 +252,30 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 if motif_pred is None:
                     continue
 
+                # Early NaN detection after model forward pass
+                nan_detected = False
+                if keyxyz_pred is not None and torch.isnan(keyxyz_pred).any():
+                    print(f"NaN detected in keyxyz_pred at epoch {epoch}, batch {b_count}")
+                    nan_detected = True
+                if key_pairdist_pred is not None and torch.isnan(key_pairdist_pred).any():
+                    print(f"NaN detected in key_pairdist_pred at epoch {epoch}, batch {b_count}")
+                    nan_detected = True
+                if rec_key_z is not None and torch.isnan(rec_key_z).any():
+                    print(f"NaN detected in rec_key_z at epoch {epoch}, batch {b_count}")
+                    nan_detected = True
+                if motif_pred is not None and torch.isnan(motif_pred).any():
+                    print(f"NaN detected in motif_pred at epoch {epoch}, batch {b_count}")
+                    nan_detected = True
+                if bind_pred is not None:
+                    for i, bp in enumerate(bind_pred):
+                        if bp is not None and torch.isnan(bp).any():
+                            print(f"NaN detected in bind_pred[{i}] at epoch {epoch}, batch {b_count}")
+                            nan_detected = True
+                
+                if nan_detected:
+                    print(f"Skipping batch {b_count} due to NaN in model outputs")
+                    continue
+
                 l_cat_pos = torch.tensor(0.0, device=device)
                 l_cat_neg = torch.tensor(0.0, device=device)
                 l_cat_contrast = torch.tensor(0.0, device=device)
@@ -322,6 +346,16 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 trg_weight = weights.get(pnames[0], 1.0)
                 loss = loss * trg_weight
 
+                # Check for NaN/Inf in total loss before recording
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"NaN/Inf detected in total loss at epoch {epoch}, batch {b_count}")
+                    print(f"  Individual losses: cat_pos={l_cat_pos:.6f}, cat_neg={l_cat_neg:.6f}")
+                    print(f"  cat_contrast={l_cat_contrast:.6f}, str_dist={l_str_dist:.6f}")
+                    print(f"  screen={l_screen:.6f}, screen_rank={l_screen_rank:.6f}")
+                    print(f"  motif_penalty={motif_penalty:.6f}, l2_penalty={l2_penalty:.6f}")
+                    print(f"  target_weight={trg_weight:.6f}")
+                    continue  # Skip this corrupted batch
+
                 temp_loss["total"].append(loss.cpu().detach().numpy())
                 temp_loss["CatP"].append(l_cat_pos.cpu().detach().numpy())
                 temp_loss["CatN"].append(l_cat_neg.cpu().detach().numpy())
@@ -342,8 +376,27 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 if is_train and (b_count + 1) % accum == 0:
                     loss.requires_grad_(True)
                     loss.backward()
+                    
+                    # Add gradient clipping to prevent NaN
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
                     optimizer.step()
                     optimizer.zero_grad()
+
+                    # Check for parameter corruption after optimizer step
+                    param_nan_count = 0
+                    nan_param_names = []
+                    for name, param in model.named_parameters():
+                        if torch.isnan(param).any() or torch.isinf(param).any():
+                            param_nan_count += 1
+                            nan_param_names.append(name)
+                            
+                    if param_nan_count > 0:
+                        print(f"CRITICAL: {param_nan_count} parameters corrupted at epoch {epoch}, batch {b_count}")
+                        print(f"Corrupted parameters: {nan_param_names[:5]}...")  # Show first 5
+                        print("Model parameters are corrupted. Training should be stopped and restarted from checkpoint.")
+                        # You can add: raise RuntimeError("Parameter corruption detected") to force stop
+                        break  # Exit the batch loop
 
                     if rank == 0 and not config.training.debug: # Access debug from config.training
                         step_metrics = {
@@ -430,7 +483,6 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
 
 def train_model(rank, world_size, config: Config): # Type hint for config is now your main Config
-    """Main training function"""
     gpu = rank % world_size
     dist.init_process_group(backend='gloo', world_size=world_size, rank=rank)
 
@@ -439,7 +491,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
         wandb.init(
             project="motifscreen-aff",
             name=f"{config.modelname}{config.version}_{config.model_note}", # Access max_epoch from config.training
-            mode="online",
+            mode=config.training.wandb_mode,
             config={
                 "model_version": config.version,
                 "model_name": config.modelname,
@@ -658,10 +710,7 @@ def main():
             config = load_config_with_base(args.config)
         except FileNotFoundError:
             print(f"Config '{args.config}' not found. Using default common config.")
-            # Fallback to a default config instance if not found
-            # This requires having a default Config instance you can create
-            # For now, let's assume it always finds a config for simplicity in this example
-            raise # Re-raise if config not found as a critical error.
+            raise FileNotFoundError(f"Config '{args.config}' not found. Using default common config.")
     if args.debug:
         config.training.debug = True # Access debug from config.training
         config.dataloader.num_workers = 1 # Access num_workers from config.dataloader
