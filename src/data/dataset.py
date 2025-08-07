@@ -42,7 +42,7 @@ class MolecularLoader:
     def find_keyatomf(self, pname: str, source: str) -> Optional[str]:
         # Access config via self.config_paths
         search_paths = [f'{self.config_paths.datapath}/{source}/{self.config_paths.keyatomf}',
-                        f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_d3/{pname}.{self.config_paths.keyatomf}',
+                        f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{pname}.{self.config_paths.keyatomf}',
         ]
 
         for path in search_paths:
@@ -57,6 +57,12 @@ class MolecularLoader:
         if not os.path.exists(mol2_path):
             logger.error(f"MOL2 file not found: {mol2_path}")
             return None
+            
+        # Check if file is empty
+        if os.path.getsize(mol2_path) == 0:
+            logger.warning(f"MOL2 file is empty: {mol2_path}")
+            return None
+            
         try:
             return myutils.read_mol2(mol2_path, drop_H=self.config_processing.drop_H)
         except Exception as e:
@@ -180,8 +186,20 @@ class GraphBuilder:
 
     def _build_edges(self, xyz: np.ndarray, bonds: List[List[int]],
                     mode: str, top_k: int, dcut: float) -> Tuple[np.ndarray, np.ndarray]:
-        X = torch.tensor(xyz[None, :])
-        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
+        # Debug: Check input shape
+        if xyz.ndim != 2 or xyz.shape[1] != 3:
+            logger.error(f"Unexpected xyz shape: {xyz.shape}, expected (N, 3)")
+            raise ValueError(f"xyz must be shape (N, 3), got {xyz.shape}")
+            
+        X = torch.tensor(xyz[None, :])  # Shape: [1, N, 3]
+        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)  # Shape: [1, N, N, 3]
+        
+        # Debug: Check dX shape before distance calculation
+        if dX.ndim != 4:
+            logger.error(f"dX has unexpected shape: {dX.shape}, expected 4D tensor")
+            logger.error(f"Original X shape: {X.shape}, xyz shape: {xyz.shape}")
+            raise ValueError(f"dX dimension error: got {dX.ndim}D, expected 4D")
+            
         u, v, d = self._find_distance_neighbors(dX, mode, top_k, dcut)
         return u, v
 
@@ -546,7 +564,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
 
             actives = [ligands_parsed[0]]
             binding_labels = [1 if tag in actives else 0 for tag in tags_read]
-
+            native_graph = None
             key_xyz = torch.zeros((4, 3))
             if actives and actives[0] in tags_read:
                 active_idx = tags_read.index(actives[0])
@@ -585,7 +603,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             active = [pname]
             decoys = self.decoys.get(pname, [])
         elif mol2_type == 'batch':
-            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_d3/{active_ligand}_b.mol2"
+            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{active_ligand}_b.mol2"
             if os.path.exists(mol2_file):
                 active_and_decoys = myutils.read_mol2_batch(mol2_file, tag_only=True)[-1]
                 active = [active_and_decoys[0]]
@@ -606,7 +624,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         source = target.split('/')[0]
         pname = target.split('/')[1]
         active_ligand = ligands[0]
-        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_d3/{active_ligand}_b.mol2"
+        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{active_ligand}_b.mol2"
         try:
             mol_data = self.loader.read_mol2_batch(mol2_file, ligands)
             if mol_data is None:
@@ -693,7 +711,6 @@ class TrainingDataSet(torch.utils.data.Dataset):
 
                     mol_data = self.loader.read_mol2_single(mol2_file)
                     if mol_data is None:
-                        logger.warning(f"Failed to read {mol2_file}")
                         continue
 
                     ligand_graph = self.graph_builder.build_ligand_graph(mol_data, name=clean_ligand)

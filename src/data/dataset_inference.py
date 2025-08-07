@@ -16,7 +16,7 @@ import scipy.spatial
 import src.data.types as types
 import src.data.utils as myutils
 import src.data.kappaidx as kappaidx
-from configs.config_loader import Config, DataPathsConfig, GraphParamsConfig, DataProcessingConfig, DataAugmentationConfig
+from configs.config_loader import Config 
 
 # Reuse components from training dataset
 from src.data.dataset import MolecularLoader, GraphBuilder, collate
