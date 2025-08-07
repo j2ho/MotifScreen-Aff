@@ -702,7 +702,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
                 try:
                     if mol2_path.endswith('.mol2'):
                         mol2_file = mol2_path
-                        conf_mol2 = mol2_path[:-5] + '.conformers.mol2'
+                        conf_mol2 = mol2_path.replace('ligand.mol2', 'conformers.mol2')
                     else:
                         mol2_file = os.path.join(mol2_path, f'{ligand}.ligand.mol2')
                         conf_mol2 = os.path.join(mol2_path, f'{ligand}.conformers.mol2')
@@ -722,11 +722,10 @@ class TrainingDataSet(torch.utils.data.Dataset):
 
                     native_graph = copy.deepcopy(ligand_graph)
                     # Use augmentation config directly
-                    if (os.path.exists(conf_mol2) and self.config.augmentation.pert and
-                        not conf_mol2.endswith(mol2_file)):
+                    if (os.path.exists(conf_mol2) and self.config.augmentation.pert):
                         try:
                             conf_xyz, _ = myutils.read_mol2s_xyzonly(conf_mol2)
-                            if conf_xyz:
+                            if conf_xyz is not None and len(conf_xyz) > 0:
                                 conf_idx = min(np.random.randint(len(conf_xyz)), len(conf_xyz) - 1)
                                 native_graph.ndata['x'] = torch.tensor(conf_xyz[conf_idx]).float()[:, None, :]
                         except:
