@@ -1,5 +1,5 @@
 model:
-  name: "msk"
+  name: "msk_opt"
   version: "v1.0"
   
   common:
@@ -7,13 +7,13 @@ model:
 
   # Grid network parameters 
   grid:
-    model: "egnn" # 'se3', 'egnn', 'egnn_attention', 'egnn_coords'
-    num_layers_grid: 8 # 5 for 'se3'
+    model: "se3" # 'se3', 'egnn', 'egnn_attention', 'egnn_coords'
+    num_layers_grid: 5 # 5 for 'se3'
     l0_in_features: 102  
     n_heads: 4
     num_channels: 32
     num_edge_features: 3
-    l0_out_features: 32
+    l0_out_features: 64
     ntypes: 6
     
   # Ligand network parameters 
@@ -38,6 +38,7 @@ model:
     shared_trigon: false
     normalize_Xform: true
     lig_to_key_attn: true
+    trigon_module: 'trigon' # 'optimized'
 
   aff:
     classification_mode: "former_contrast"
