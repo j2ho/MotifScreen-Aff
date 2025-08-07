@@ -53,7 +53,7 @@ training:
   ddp: true
   silent: false
   amp: false
-
+  wandb_mode: "online"  # Options: "online", "disabled", "offline"
 # Data parameters
 data:
   datapath: "/home/j2ho/DB/for_msk/" 

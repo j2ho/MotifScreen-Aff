@@ -101,6 +101,7 @@ class TrainingParamsConfig:
     accumulation_steps: int = 2
     load_checkpoint: bool = False 
     amp: bool = False  
+    wandb_mode: str = "online"  # Options: "online", "disabled", "offline"
 
 @dataclass
 class DataLoaderParamsConfig: # Consolidated dataloader-related params
@@ -245,7 +246,8 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             silent=config_dict.get('training', {}).get('silent', False),
             accumulation_steps=config_dict.get('training', {}).get('accumulation_steps', 1),
             load_checkpoint=config_dict.get('training', {}).get('load_checkpoint', False),
-            amp=config_dict.get('training', {}).get('amp', False)  
+            amp=config_dict.get('training', {}).get('amp', False), 
+            wandb_mode=config_dict.get('training', {}).get('wandb_mode', 'online')  # Added wandb_mode 
         ),
         dataloader=DataLoaderParamsConfig(
             batch_size=config_dict.get('dataloader', {}).get('batch_size', 1),
