@@ -50,7 +50,7 @@ def MaskedBCE(cats,preds,masks,debug=False):
         # transformed iQ -- 0~0.5->1, drops to 0 as x = 0.5->1.0
         # allows less penalty if x is 0.0 ~ 0.5
         #iQt = -0.5*torch.tanh(5*Q-3.0)+1)
-        iQt = 1.0-Q+1.0e-6
+        iQt = torch.clamp(1.0-Q, min=1.0e-5)
         b  = -icat*torch.log(iQt) #penalize if high
 
         # normalize by num grid points & cat points
