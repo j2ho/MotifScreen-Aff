@@ -175,7 +175,6 @@ class EndtoEndModel(nn.Module):
         if all_same_shape and len(keyidx) > 0:
             # Fully vectorized approach when all batches have same key structure
             key_idx = torch.stack(keyidx, dim=0).float().to(Grec.device)  # B x K x N
-            # Create mask based on non-zero entries (same as original logic)
             lig_to_key_mask = (key_idx != 0).float()
         else:
             key_idx = torch.zeros((batch_size, Kmax, Nmax), dtype=torch.float32, device=Grec.device)
@@ -212,12 +211,7 @@ class EndtoEndModel(nn.Module):
         h_grid_batched = self.grid_proj(h_grid_batched)
         ##############################################
         
-        # Pre-compute batch vectors and coordinates that are reused across all layers
-        batchvec_rec_cached = make_batch_vec(Ggrid.batch_num_nodes()).to(Ggrid.device)
-        x_cached = Ggrid.ndata['x'].squeeze()
-        r_coords_batched_cached, _ = to_dense_batch(x_cached, batchvec_rec_cached)
-        
-        for layer_idx, (trigon,xformK,xformG) in enumerate(zip(self.trigon_key_layers,self.XformKeys,self.XformGrids)):
+        for trigon,xformK,xformG in zip(self.trigon_key_layers,self.XformKeys,self.XformGrids): 
 
             D_key = self.transform_distance(h_key_batched)
 
@@ -230,8 +224,7 @@ class EndtoEndModel(nn.Module):
 
             # Ykey_s: B x K x 3; z_norm: B x N x K x d
             # z: B x N x K x d; z_mask: B x N x K
-            Ykey_s, z_norm = self.struct_module(z, z_mask, Ggrid, key_mask, 
-                                              batchvec_rec_cached, r_coords_batched_cached)
+            Ykey_s, z_norm = self.struct_module(z, z_mask, Ggrid, key_mask)
 
         # 4) final prediction head
         aff = self.class_module(z, h_grid_batched, h_key_batched,
