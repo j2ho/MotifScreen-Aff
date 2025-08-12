@@ -61,8 +61,12 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
         }
     epoch = 0
 
-    # Access learning rate via config.training.lr
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.lr)
+    # Access learning rate and weight decay via config.training
+    optimizer = torch.optim.Adam(
+        model.parameters(), 
+        lr=config.training.lr,
+        weight_decay=config.training.weight_decay
+    )
     
     # Add learning rate scheduler based on config
     scheduler = None
@@ -157,10 +161,23 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
             os.makedirs(model_dir, exist_ok=True)
 
     if epoch == 0:
+        # Improved parameter initialization to prevent parameter explosion
         for i, (name, layer) in enumerate(model.named_modules()):
-            if isinstance(layer, torch.nn.Linear) and \
-               ("class" in name or 'Xform' in name):
-                layer.weight.data *= 0.1
+            if isinstance(layer, torch.nn.Linear):
+                if "class" in name or 'Xform' in name:
+                    # Scale down output layers more aggressively
+                    layer.weight.data *= 0.1
+                elif "trigon" in name.lower() or "attention" in name.lower():
+                    # Special initialization for attention layers to prevent explosion
+                    torch.nn.init.xavier_uniform_(layer.weight, gain=0.5)
+                    if layer.bias is not None:
+                        torch.nn.init.zeros_(layer.bias)
+            elif isinstance(layer, torch.nn.LayerNorm):
+                # Ensure LayerNorm is properly initialized
+                if layer.weight is not None:
+                    torch.nn.init.ones_(layer.weight)
+                if layer.bias is not None:
+                    torch.nn.init.zeros_(layer.bias)
 
     if rank == 0:
         print("Nparams:", count_parameters(model))
@@ -414,8 +431,19 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                     # Add gradient clipping to prevent NaN and monitor gradient norm
                     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     
-                    # Monitor parameter norms
+                    # Monitor parameter norms and clip if necessary
                     param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
+                    
+                    # Check for parameter explosion and apply clipping if needed
+                    if param_norm > config.training.max_param_norm:
+                        print(f"WARNING: Parameter norm {param_norm:.2f} exceeds threshold {config.training.max_param_norm}")
+                        # Clip parameters to prevent explosion
+                        with torch.no_grad():
+                            for param in model.parameters():
+                                if param.requires_grad:
+                                    param.data.clamp_(-10.0, 10.0)
+                        param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
+                        print(f"After clipping, parameter norm: {param_norm:.2f}")
                     
                     optimizer.step()
                     optimizer.zero_grad()
@@ -538,6 +566,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 "model_version": config.version,
                 "model_name": config.modelname,
                 "learning_rate": config.training.lr, # Access LR from config.training
+                "weight_decay": config.training.weight_decay, # Weight decay parameter
                 "max_epochs": config.training.max_epoch, # Access max_epoch from config.training
                 "batch_size": config.dataloader.batch_size, # Access batch_size from config.dataloader
                 "dropout_rate": config.dropout_rate, # This is a direct attribute
