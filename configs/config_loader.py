@@ -92,6 +92,22 @@ class AffModuleParams:
     classification_mode: str = "former_contrast"
 
 @dataclass
+class SchedulerConfig:
+    """Learning rate scheduler configuration"""
+    use_scheduler: bool = True
+    scheduler_type: str = "ReduceLROnPlateau"  # Options: "ReduceLROnPlateau", "StepLR", "CosineAnnealingLR", "None"
+    # ReduceLROnPlateau params
+    factor: float = 0.8
+    patience: int = 3
+    min_lr: float = 1e-6
+    threshold: float = 1e-4
+    # StepLR params
+    step_size: int = 50
+    gamma: float = 0.1
+    # CosineAnnealingLR params
+    T_max: int = 100
+
+@dataclass
 class TrainingParamsConfig: 
     lr: float = 1.0e-4
     max_epoch: int = 500
@@ -102,6 +118,7 @@ class TrainingParamsConfig:
     load_checkpoint: bool = False 
     amp: bool = False  
     wandb_mode: str = "online"  # Options: "online", "disabled", "offline"
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
 @dataclass
 class DataLoaderParamsConfig: # Consolidated dataloader-related params
@@ -247,7 +264,18 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             accumulation_steps=config_dict.get('training', {}).get('accumulation_steps', 1),
             load_checkpoint=config_dict.get('training', {}).get('load_checkpoint', False),
             amp=config_dict.get('training', {}).get('amp', False), 
-            wandb_mode=config_dict.get('training', {}).get('wandb_mode', 'online')  # Added wandb_mode 
+            wandb_mode=config_dict.get('training', {}).get('wandb_mode', 'online'),  # Added wandb_mode 
+            scheduler=SchedulerConfig(
+                use_scheduler=config_dict.get('training', {}).get('scheduler', {}).get('use_scheduler', True),
+                scheduler_type=config_dict.get('training', {}).get('scheduler', {}).get('scheduler_type', 'ReduceLROnPlateau'),
+                factor=config_dict.get('training', {}).get('scheduler', {}).get('factor', 0.8),
+                patience=config_dict.get('training', {}).get('scheduler', {}).get('patience', 3),
+                min_lr=config_dict.get('training', {}).get('scheduler', {}).get('min_lr', 1e-6),
+                threshold=config_dict.get('training', {}).get('scheduler', {}).get('threshold', 1e-4),
+                step_size=config_dict.get('training', {}).get('scheduler', {}).get('step_size', 50),
+                gamma=config_dict.get('training', {}).get('scheduler', {}).get('gamma', 0.1),
+                T_max=config_dict.get('training', {}).get('scheduler', {}).get('T_max', 100)
+            )
         ),
         dataloader=DataLoaderParamsConfig(
             batch_size=config_dict.get('dataloader', {}).get('batch_size', 1),
