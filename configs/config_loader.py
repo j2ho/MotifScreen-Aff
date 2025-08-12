@@ -118,6 +118,8 @@ class TrainingParamsConfig:
     load_checkpoint: bool = False 
     amp: bool = False  
     wandb_mode: str = "online"  # Options: "online", "disabled", "offline"
+    weight_decay: float = 1e-4  # L2 regularization via optimizer weight decay
+    max_param_norm: float = 100.0  # Maximum parameter norm before warning/clipping
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
 @dataclass
@@ -265,6 +267,8 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             load_checkpoint=config_dict.get('training', {}).get('load_checkpoint', False),
             amp=config_dict.get('training', {}).get('amp', False), 
             wandb_mode=config_dict.get('training', {}).get('wandb_mode', 'online'),  # Added wandb_mode 
+            weight_decay=config_dict.get('training', {}).get('weight_decay', 1e-4),
+            max_param_norm=config_dict.get('training', {}).get('max_param_norm', 100.0),
             scheduler=SchedulerConfig(
                 use_scheduler=config_dict.get('training', {}).get('scheduler', {}).get('use_scheduler', True),
                 scheduler_type=config_dict.get('training', {}).get('scheduler', {}).get('scheduler_type', 'ReduceLROnPlateau'),

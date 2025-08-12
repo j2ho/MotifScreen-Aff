@@ -46,7 +46,7 @@ model:
 # Training parameters
 training:
   load_checkpoint: false
-  lr: 1.0e-4
+  lr: 1.0e-5
   max_epoch: 500
   accumulation_steps: 1
   debug: false
@@ -54,6 +54,8 @@ training:
   silent: false
   amp: false
   wandb_mode: "online"  # Options: "online", "disabled", "offline"
+  weight_decay: 1.0e-4  # L2 regularization via optimizer weight decay
+  max_param_norm: 20.0  # Maximum parameter norm before warning
   
   # Learning rate scheduler configuration
   scheduler:
