@@ -51,12 +51,13 @@ class EndtoEndModel(nn.Module):
                                           grid_m=args.model_params_grid.l0_out_features,
                                           ligand_m=args.model_params_ligand.l0_out_features,
                                           c=self.c, dropout_rate=self.dropout_rate )
-        else:
+        elif args.model_params_TR.trigon_module == 'trigon':
             self.trigon_lig = TrigonModule( n_trigonometry_module_stack=args.model_params_TR.n_trigon_lig_layers,
                                         grid_m=args.model_params_grid.l0_out_features,
                                         ligand_m=args.model_params_ligand.l0_out_features,
                                         c=self.c, dropout_rate=self.dropout_rate )
-
+        else:
+            sys.exit("unknown trigon_module: "+args.model_params_TR.trigon_module)
         self.transform_distance = DistanceModule(self.d,self.c)
         self.struct_module = StructModule(self.c) # receives z. self.c = embedding channels = output z dim
 
@@ -73,20 +74,24 @@ class EndtoEndModel(nn.Module):
 
         if args.model_params_TR.shared_trigon:
             if args.model_params_TR.trigon_module == 'optimized':
+                # 실제로 optimize 되지는 않은 것 같은데 갈아끼우고 싶은 경우 trigon_optimized.py 를 수정하면 되도록 일단 if문 유지 
                 trigon_key_layer = TrigonOpt(n_trigonometry_module_stack=1,
                                             # 위에 projection 했으면 이거 c로 바꿔야함
                                             grid_m=self.c, #args.model_params_grid.l0_out_features,
                                             ligand_m =self.c, #args.model_params_ligand.l0_out_features, 
                                             c=self.c, dropout_rate=self.dropout_rate)
-            else:
+            elif args.model_params_TR.trigon_module == 'trigon':
                 trigon_key_layer = TrigonModule(n_trigonometry_module_stack=1,
                                                 # 위에 projection 했으면 이거 c로 바꿔야함
                                                 grid_m=self.c, #args.model_params_grid.l0_out_features,
                                                 ligand_m =self.c, #args.model_params_ligand.l0_out_features, 
                                                 c=self.c, dropout_rate=self.dropout_rate)
+            else:
+                sys.exit("unknown trigon_module: "+args.model_params_TR.trigon_module)
             self.trigon_key_layers = nn.ModuleList([ trigon_key_layer for _ in range(Nlayers) ])
 
         else:
+            # 실제로 optimize 되지는 않은 것 같은데 갈아끼우고 싶은 경우 trigon_optimized.py 를 수정하면 되도록 일단 if문 유지 
             if args.model_params_TR.trigon_module == 'optimized':
                 self.trigon_key_layers = nn.ModuleList([
                     TrigonOpt(n_trigonometry_module_stack=1,
@@ -94,7 +99,7 @@ class EndtoEndModel(nn.Module):
                                grid_m=self.c, #args.model_params_grid.l0_out_features,
                                ligand_m =self.c, #args.model_params_ligand.l0_out_features, 
                                c=self.c, dropout_rate=self.dropout_rate) for _ in range(Nlayers) ])
-            else:
+            elif args.model_params_TR.trigon_module == 'trigon':
                 # args.model_params_TR.trigon_module == 'trigon'
                 self.trigon_key_layers = nn.ModuleList([
                     TrigonModule(n_trigonometry_module_stack=1,
@@ -102,6 +107,8 @@ class EndtoEndModel(nn.Module):
                                 grid_m=self.c, #args.model_params_grid.l0_out_features,
                                 ligand_m =self.c, #args.model_params_ligand.l0_out_features, 
                                 c=self.c, dropout_rate=self.dropout_rate) for _ in range(Nlayers) ])
+            else:
+                sys.exit("unknown trigon_module: "+args.model_params_TR.trigon_module)
         self.XformKeys = nn.ModuleList([ XformModule( self.c, normalize=normalize ) for _ in range(Nlayers) ])
         self.XformGrids = nn.ModuleList([ XformModule( self.c, normalize=normalize ) for _ in range(Nlayers) ])
         
@@ -164,28 +171,36 @@ class EndtoEndModel(nn.Module):
                      drop_out=drop_out )
 
         # 3-4) Ligand-> Key mapper (trim down ligand -> key) - OPTIMIZED
+        # Kmax = max([idx.shape[0] for idx in keyidx])
+        # Nmax = max([idx.shape[1] for idx in keyidx])
+        # batch_size = Glig.batch_num_nodes().shape[0]
+        
+        # # Check if all keyidx have the same shape for full vectorization
+        # shapes = [idx.shape for idx in keyidx]
+        # all_same_shape = all(shape == shapes[0] for shape in shapes)
+        
+        # if all_same_shape and len(keyidx) > 0:
+        #     # Fully vectorized approach when all batches have same key structure
+        #     key_idx = torch.stack(keyidx, dim=0).float().to(Grec.device)  # B x K x N
+        #     lig_to_key_mask = (key_idx != 0).float()
+        # else:
+        #     key_idx = torch.zeros((batch_size, Kmax, Nmax), dtype=torch.float32, device=Grec.device)
+        #     lig_to_key_mask = torch.zeros((batch_size, Kmax, Nmax), dtype=torch.float32, device=Grec.device)
+            
+        #     # Batch process where possible
+        #     for i, idx in enumerate(keyidx):
+        #         if idx.numel() > 0:
+        #             K_actual, N_actual = idx.shape
+        #             key_idx[i, :K_actual, :N_actual] = idx.float()
+        #             lig_to_key_mask[i, :K_actual, :N_actual] = 1.0
+
         Kmax = max([idx.shape[0] for idx in keyidx])
         Nmax = max([idx.shape[1] for idx in keyidx])
-        batch_size = Glig.batch_num_nodes().shape[0]
-        
-        # Check if all keyidx have the same shape for full vectorization
-        shapes = [idx.shape for idx in keyidx]
-        all_same_shape = all(shape == shapes[0] for shape in shapes)
-        
-        if all_same_shape and len(keyidx) > 0:
-            # Fully vectorized approach when all batches have same key structure
-            key_idx = torch.stack(keyidx, dim=0).float().to(Grec.device)  # B x K x N
-            lig_to_key_mask = (key_idx != 0).float()
-        else:
-            key_idx = torch.zeros((batch_size, Kmax, Nmax), dtype=torch.float32, device=Grec.device)
-            lig_to_key_mask = torch.zeros((batch_size, Kmax, Nmax), dtype=torch.float32, device=Grec.device)
-            
-            # Batch process where possible
-            for i, idx in enumerate(keyidx):
-                if idx.numel() > 0:
-                    K_actual, N_actual = idx.shape
-                    key_idx[i, :K_actual, :N_actual] = idx.float()
-                    lig_to_key_mask[i, :K_actual, :N_actual] = 1.0
+        key_idx = torch.zeros((Glig.batch_num_nodes().shape[0],Kmax,Nmax)).to(Grec.device) #b x K x N
+        lig_to_key_mask = torch.zeros_like( key_idx ) # B x K x N
+        for i,idx in enumerate(keyidx):
+            key_idx[i,:idx.shape[0],:idx.shape[1]] = idx
+            lig_to_key_mask[i,:idx.shape[0],:idx.shape[1]] = 1.0
 
         h_key_batched = torch.einsum('bkj,bjd->bkd', key_idx, h_lig_batched)
 
