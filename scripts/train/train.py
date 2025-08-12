@@ -49,11 +49,13 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
 
     train_loss_empty = {
         "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "L2Penalty": [], "MotifPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
     valid_loss_empty = {
         "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "L2Penalty": [], "MotifPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
@@ -61,6 +63,35 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
 
     # Access learning rate via config.training.lr
     optimizer = torch.optim.Adam(model.parameters(), lr=config.training.lr)
+    
+    # Add learning rate scheduler based on config
+    scheduler = None
+    if config.training.scheduler.use_scheduler:
+        if config.training.scheduler.scheduler_type == "ReduceLROnPlateau":
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, 
+                mode='min', 
+                factor=config.training.scheduler.factor,
+                patience=config.training.scheduler.patience,
+                verbose=True,
+                min_lr=config.training.scheduler.min_lr,
+                threshold=config.training.scheduler.threshold
+            )
+        elif config.training.scheduler.scheduler_type == "StepLR":
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=config.training.scheduler.step_size,
+                gamma=config.training.scheduler.gamma
+            )
+        elif config.training.scheduler.scheduler_type == "CosineAnnealingLR":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=config.training.scheduler.T_max
+            )
+        else:
+            print(f"Unknown scheduler type: {config.training.scheduler.scheduler_type}. No scheduler will be used.")
+    else:
+        print("Scheduler disabled in config.")
 
     # Checkpoint path uses config.modelname and config.version
     checkpoint_path = join("models", f"{config.modelname}{config.version}", "model.pkl")
@@ -135,7 +166,7 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
         print("Nparams:", count_parameters(model))
         print("Loaded")
 
-    return model, optimizer, epoch, train_loss, valid_loss
+    return model, optimizer, scheduler, epoch, train_loss, valid_loss
 
 
 def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for config is now your main Config
@@ -199,6 +230,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
     """Train for one epoch"""
     temp_loss = {
         "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "L2Penalty": [], "MotifPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
@@ -361,6 +393,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 temp_loss["CatN"].append(l_cat_neg.cpu().detach().numpy())
                 temp_loss["CatCont"].append(l_cat_contrast.cpu().detach().numpy())
                 temp_loss["NormPenalty"].append((motif_penalty + l2_penalty).cpu().detach().numpy())
+                temp_loss["L2Penalty"].append(l2_penalty.cpu().detach().numpy())
+                temp_loss["MotifPenalty"].append(motif_penalty.cpu().detach().numpy())
 
                 if l_str_dist > 0.0:
                     temp_loss["Str"].append(l_str_dist.cpu().detach().numpy())
@@ -377,8 +411,11 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                     loss.requires_grad_(True)
                     loss.backward()
                     
-                    # Add gradient clipping to prevent NaN
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    # Add gradient clipping to prevent NaN and monitor gradient norm
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
+                    # Monitor parameter norms
+                    param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
                     
                     optimizer.step()
                     optimizer.zero_grad()
@@ -405,7 +442,12 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                             "train_step/loss_cat_pos": float(l_cat_pos.cpu().detach().numpy()),
                             "train_step/loss_cat_neg": float(l_cat_neg.cpu().detach().numpy()),
                             "train_step/loss_cat_contrast": float(l_cat_contrast.cpu().detach().numpy()),
-                            "train_step/loss_norm_penalty": float((motif_penalty + l2_penalty).cpu().detach().numpy())
+                            "train_step/loss_norm_penalty": float((motif_penalty + l2_penalty).cpu().detach().numpy()),
+                            "train_step/loss_l2_penalty": float(l2_penalty.cpu().detach().numpy()),
+                            "train_step/loss_motif_penalty": float(motif_penalty.cpu().detach().numpy()),
+                            "train_step/grad_norm": float(grad_norm),
+                            "train_step/param_norm": param_norm,
+                            "train_step/learning_rate": optimizer.param_groups[0]['lr']
                         }
 
                         if l_str_dist > 0.0:
@@ -511,7 +553,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
 
-    model, optimizer, start_epoch, train_loss, valid_loss = load_params(rank, config)
+    model, optimizer, scheduler, start_epoch, train_loss, valid_loss = load_params(rank, config)
 
     # Access ddp from config.training
     if config.training.ddp:
@@ -565,7 +607,9 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                     "train/loss_cat_pos": np.mean(train_loss['CatP'][-1]),
                     "train/loss_cat_neg": np.mean(train_loss['CatN'][-1]),
                     "train/loss_cat_contrast": np.mean(train_loss['CatCont'][-1]),
-                    "train/loss_norm_penalty": np.mean(train_loss['NormPenalty'][-1])
+                    "train/loss_norm_penalty": np.mean(train_loss['NormPenalty'][-1]),
+                    "train/loss_l2_penalty": np.mean(train_loss['L2Penalty'][-1]),
+                    "train/loss_motif_penalty": np.mean(train_loss['MotifPenalty'][-1])
                 }
 
                 if len(train_loss['Str'][-1]) > 0:
@@ -618,7 +662,9 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                     "valid/loss_cat_pos": np.mean(valid_loss['CatP'][-1]),
                     "valid/loss_cat_neg": np.mean(valid_loss['CatN'][-1]),
                     "valid/loss_cat_contrast": np.mean(valid_loss['CatCont'][-1]),
-                    "valid/loss_norm_penalty": np.mean(valid_loss['NormPenalty'][-1])
+                    "valid/loss_norm_penalty": np.mean(valid_loss['NormPenalty'][-1]),
+                    "valid/loss_l2_penalty": np.mean(valid_loss['L2Penalty'][-1]),
+                    "valid/loss_motif_penalty": np.mean(valid_loss['MotifPenalty'][-1])
                 }
 
                 if len(valid_loss['Str'][-1]) > 0:
@@ -644,6 +690,13 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
 
         print("***SUM***")
         print(f"Train loss | {np.mean(train_loss['total'][-1]):7.4f} | Valid loss | {np.mean(valid_loss['total'][-1]):7.4f}")
+        
+        # Update learning rate scheduler based on validation loss
+        if rank == 0 and scheduler is not None:
+            if config.training.scheduler.scheduler_type == "ReduceLROnPlateau":
+                scheduler.step(np.mean(valid_loss['total'][-1]))
+            elif config.training.scheduler.scheduler_type in ["StepLR", "CosineAnnealingLR"]:
+                scheduler.step()  # These schedulers don't take metrics
 
         if rank == 0:
             auc_l = "AUC: "
