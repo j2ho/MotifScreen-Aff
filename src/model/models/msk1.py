@@ -10,6 +10,7 @@ from src.model.modules.trigon import TrigonModule
 from src.model.modules.featurizers import Grid_SE3, Grid_EGNN, Ligand_SE3, Ligand_GAT
 from src.model.utils import to_dense_batch, make_batch_vec, get_pair_dis_one_hot, masked_softmax
 
+
 class EndtoEndModel(nn.Module):
     """SE(3) equivariant GNNs with attention"""
     def __init__(self, args):
@@ -114,7 +115,7 @@ class EndtoEndModel(nn.Module):
         except Exception as e:
             # print(f"DEBUG: LigandFeaturizer failed with error: {e}")
             return NullArgs
-
+        
         h_lig_global = self.extract_ligand_embedding( Glig.gdata.to(Glig.device),
                                                       dropout=drop_out ) # gdata isn't std attr
 
