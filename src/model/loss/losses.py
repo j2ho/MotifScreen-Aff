@@ -13,6 +13,7 @@ def RankingLoss( ps, qs ): #p: pred q:
     return loss
 
 
+
 def ScreeningContrastLoss( embs, blabel, nK ):
     # embs: B x k
     # blabel: B
@@ -77,12 +78,7 @@ def ContrastLoss(preds,masks):
 def StructureLoss( Yrec, Ylig, nK, opt='mse'):
     # Yrec: [B,Kmax,3] Ylig: [1,K,3]
     k = nK[0].item()
-    print (k) 
-    print ('yrec:', Yrec.shape, 'ylig:', Ylig.shape, 'nK:', nK)
-    print (Yrec) 
-    print (Ylig)
     dY = Yrec[0, :k, :] - Ylig[0, :k, :]  # More explicit indexing
-    print (dY.shape)
     N = 1
     if opt == 'mse':
         loss1 = torch.sum(dY*dY,dim=0) # sum over K
@@ -92,7 +88,6 @@ def StructureLoss( Yrec, Ylig, nK, opt='mse'):
         loss1_sum = 10.0*torch.nn.functional.huber_loss(d,torch.zeros_like(d))
 
     mae = torch.sum(torch.abs(dY))/nK[0] # this is correct mae...
-    print (loss1_sum)
     return loss1_sum, mae
 
 def PairDistanceLoss( Dpred, X, nK, bin_min = -0.1, bin_size=0.25, bin_max=15.75 ):

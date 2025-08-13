@@ -121,6 +121,7 @@ class TrainingParamsConfig:
     weight_decay: float = 1e-4  # L2 regularization via optimizer weight decay
     max_param_norm: float = 100.0  # Maximum parameter norm before warning/clipping
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    custom_init: bool = False  # Custom initialization flag, can be used to trigger specific init logic
 
 @dataclass
 class DataLoaderParamsConfig: # Consolidated dataloader-related params
@@ -134,7 +135,6 @@ class DataLoaderParamsConfig: # Consolidated dataloader-related params
 class LossWeightsConfig: # Consolidated loss weights
     w_cat: float = 0.05
     w_str: float = 0.2
-    w_reg: float = 1.0e-10
     w_penalty: float = 1.0e-10
     w_contrast: float = 2.0
     w_spread: float = 5.0
@@ -269,6 +269,7 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             wandb_mode=config_dict.get('training', {}).get('wandb_mode', 'online'),  # Added wandb_mode 
             weight_decay=config_dict.get('training', {}).get('weight_decay', 1e-4),
             max_param_norm=config_dict.get('training', {}).get('max_param_norm', 100.0),
+            custom_init=config_dict.get('training', {}).get('custom_init', False),  # Custom initialization flag
             scheduler=SchedulerConfig(
                 use_scheduler=config_dict.get('training', {}).get('scheduler', {}).get('use_scheduler', True),
                 scheduler_type=config_dict.get('training', {}).get('scheduler', {}).get('scheduler_type', 'ReduceLROnPlateau'),
@@ -290,7 +291,6 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
         losses=LossWeightsConfig(
             w_cat=config_dict.get('losses', {}).get('w_cat', 0.05),
             w_str=config_dict.get('losses', {}).get('w_str', 0.2),
-            w_reg=config_dict.get('losses', {}).get('w_reg', 1.0e-10),
             w_penalty=config_dict.get('losses', {}).get('w_penalty', 1.0e-10),
             w_contrast=config_dict.get('losses', {}).get('w_contrast', 2.0),
             w_spread=config_dict.get('losses', {}).get('w_spread', 5.0),

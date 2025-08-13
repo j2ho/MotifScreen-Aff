@@ -56,6 +56,7 @@ training:
   wandb_mode: "online"  # Options: "online", "disabled", "offline"
   weight_decay: 1.0e-4  # L2 regularization via optimizer weight decay
   max_param_norm: 20.0  # Maximum parameter norm before warning
+  custom_init: false  # Custom initialization flag, can be used to trigger specific init logic
   
   # Learning rate scheduler configuration
   scheduler:
@@ -101,13 +102,12 @@ dataloader:
 
 # Loss weights
 losses:
-  w_cat: 0.05
-  w_str: 0.1
-  w_reg: 1.0e-10
-  w_penalty: 1.0e-8
+  w_cat: 0.05 #wGrid
+  w_str: 0.2 #wTr 
+  w_penalty: 1.0e-8 #w_reg
   w_contrast: 2.0
-  w_spread: 1.0
-  w_screen: 1.0
+  w_spread: 5.0
+  w_screen: 0.5
   w_screen_contrast: 0.5
   w_screen_ranking: 5.0
   w_Dkey: 1.0
