@@ -42,7 +42,7 @@ class MolecularLoader:
     def find_keyatomf(self, pname: str, source: str) -> Optional[str]:
         # Access config via self.config_paths
         search_paths = [f'{self.config_paths.datapath}/{source}/{self.config_paths.keyatomf}',
-                        f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{pname}.{self.config_paths.keyatomf}',
+                        f'{self.config_paths.datapath}/{source}/{pname}/{pname}.{self.config_paths.keyatomf}',
         ]
 
         for path in search_paths:
@@ -290,7 +290,7 @@ class GraphBuilder:
             pass
         origin_np = origin.squeeze().numpy()
         xyz_centered = xyz - origin_np
-        grids_centered = grids - origin_np
+        grids_centered = grids - origin_np 
         return xyz_centered, grids_centered
 
     def _randomize_coordinates(self, xyz: np.ndarray, randomize_factor: float) -> np.ndarray:
@@ -307,7 +307,10 @@ class GraphBuilder:
         all_atypes = np.concatenate([atypes, [0] * ngrids])
         all_sasa = np.concatenate([sasa_rec, [0.0] * ngrids])
         all_charges = np.concatenate([charges_rec, [0.0] * ngrids])
-        d2o = np.sqrt(np.sum(all_xyz * all_xyz, axis=1))
+        #drop this
+        #d2o = np.sqrt(np.sum(all_xyz * all_xyz, axis=1))
+        d2o = np.zeros(all_xyz.shape[0]) # dummy
+        
         features = []
         aa_onehot = np.eye(types.N_AATYPE)[all_aas]
         features.append(aa_onehot)
@@ -478,11 +481,12 @@ class TrainingDataSet(torch.utils.data.Dataset):
 
         origin = torch.tensor(np.mean(grids, axis=0)).float()
 
-        if native_graph is not None:
-            native_graph.ndata['x'] = native_graph.ndata['x'] - origin
-            key_xyz = key_xyz - origin
-
-        grids = grids - origin.squeeze().numpy()
+        # processed already
+        #if native_graph is not None:
+            #native_graph.ndata['x'] = native_graph.ndata['x'] - origin
+            #key_xyz = key_xyz - origin
+        #grids = grids - origin.squeeze().numpy() # will be processed at receptor construction
+        
         gridchain = None # Still using None for now
         receptor_graph, processed_grids, grid_indices = self.graph_builder.build_receptor_graph(
             receptor_file_paths['propnpz'], grids, origin, gridchain
@@ -521,23 +525,71 @@ class TrainingDataSet(torch.utils.data.Dataset):
         return True
 
     def _load_grid_data(self, gridinfo_path: str) -> Optional[Tuple]:
+        grids = []
+        cats = []
         try:
             sample = np.load(gridinfo_path, allow_pickle=True)
             grids = sample['xyz']
             cats, mask = None, None
-            if 'labels' in sample or 'label' in sample:
+            if self.config.cross_validation.motif_otf and 'PHcoord' in sample:
+                cats = self._label_PH(grids,sample.get('PHcoord'), sample.get('PHtype'))
+                #cats = torch.tensor(cats).float()
+                #mask = torch.sum(cats>0,axis=1).float() #0 or 1
+            elif 'labels' in sample or 'label' in sample:
                 cats = sample.get('labels', sample.get('label'))
-                if len(cats) > 0:
-                    if cats.shape[1] > self.config.processing.ntype:
-                        cats = cats[:, :self.config.processing.ntype]
-                    mask = np.sum(cats > 0, axis=1)
-                    cats = torch.tensor(cats).float()
-                    mask = torch.tensor(mask).float()
-            return grids, cats, mask
+            else:
+                return None
+                
         except Exception as e:
             logger.error(f"Error loading grid data from {gridinfo_path}: {e}")
             return None
 
+        if len(cats) > 0:
+            if cats.shape[1] > self.config.processing.ntype:
+                cats = cats[:, :self.config.processing.ntype]
+            mask = np.sum(cats > 0, axis=1)
+            cats = torch.tensor(cats).float()
+            mask = torch.tensor(mask).float()
+
+        return grids, cats, mask
+
+    def _label_PH(self, grids, PHxyz, PHtypes, sig=1.0, out=None):
+        indices_true, indices_fake = [],[]
+        kd      = scipy.spatial.cKDTree(grids)
+        kd_true   = scipy.spatial.cKDTree(PHxyz) # M x 3
+        indices_true = np.concatenate(kd_true.query_ball_tree(kd, 1.5))
+        indices_true = np.array(np.unique(indices_true),dtype=np.int16)
+
+        # distance b/w grid & true-labeled-motifs
+        dv2xyz = np.array([[g-x for g in grids[indices_true]] for x in PHxyz]) # grids x numTrue
+        d2xyz = np.sum(dv2xyz*dv2xyz,axis=2)
+        overlap = np.exp(-d2xyz/sig/sig) # Gaussian decay
+
+        N = 6 #cats_true.shape[1] -- hard-coded
+        label = np.zeros((len(grids),N))
+
+        # assign labels
+        for o,cat in zip(overlap,PHtypes): # motif index
+            for j,p in enumerate(o): # grid index
+                if p > 0.01:
+                    label[indices_true[j],cat] = max(label[indices_true[j],cat],np.sqrt(p))
+
+        # just for book-keeping
+        if out != None:
+            nlabeled = 0
+            for i,l in enumerate(label):
+                grid = grids[i]
+                if max(l) > 0.01:
+                    imotif = np.where(l>0.01)[0]
+                    for j in imotif:
+                        B = np.sqrt(l[j])
+                        nlabeled += 1
+                        mname = ['H','CB','CA','CD','CH','CR'][j]
+                        out.write("HETATM %4d  %2s  %2s  X%4d    %8.3f%8.3f%8.3f  1.00  %5.2f\n"%(i,mname,mname,i,grid[0],grid[1],grid[2],B))
+                out.write("HETATM %4d  H   H   X%4d    %8.3f%8.3f%8.3f  1.00  %5.2f\n"%(i,i,grid[0],grid[1],grid[2],0.0))
+                
+        return label
+    
     def _apply_grid_randomization(self, grids: np.ndarray) -> np.ndarray:
         rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(len(grids), 3))
         return grids + rand_xyz
@@ -546,6 +598,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
                         keyatoms_dict: Dict) -> Optional[Tuple]:
         try:
             ligands_parsed, mol2_type, data_type = self._parse_ligands(target, ligands)
+
             if ligands_parsed is None:
                 return None
 
@@ -603,7 +656,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             active = [pname]
             decoys = self.decoys.get(pname, [])
         elif mol2_type == 'batch':
-            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{active_ligand}_b.mol2"
+            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/{active_ligand}.mol2"
             if os.path.exists(mol2_file):
                 active_and_decoys = myutils.read_mol2_batch(mol2_file, tag_only=True)[-1]
                 active = [active_and_decoys[0]]
@@ -624,7 +677,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         source = target.split('/')[0]
         pname = target.split('/')[1]
         active_ligand = ligands[0]
-        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{active_ligand}_b.mol2"
+        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/{active_ligand}.mol2"
         try:
             mol_data = self.loader.read_mol2_batch(mol2_file, ligands)
             if mol_data is None:
@@ -727,7 +780,8 @@ class TrainingDataSet(torch.utils.data.Dataset):
                             conf_xyz, _ = myutils.read_mol2s_xyzonly(conf_mol2)
                             if conf_xyz is not None and len(conf_xyz) > 0:
                                 conf_idx = min(np.random.randint(len(conf_xyz)), len(conf_xyz) - 1)
-                                native_graph.ndata['x'] = torch.tensor(conf_xyz[conf_idx]).float()[:, None, :]
+                                ligand_graph.ndata['x'] = torch.tensor(conf_xyz[conf_idx]).float()[:, None, :]
+                                ligand_graph.ndata['x'] -= ligand_graph.ndata['x'].mean(axis=0)
                         except:
                             pass
 
@@ -860,6 +914,7 @@ def collate(samples):
         batched_key_xyz = torch.tensor(0.0)
         batched_key_indices = torch.tensor(0.0)
         batched_binding_labels = torch.tensor([])
+
     return (batched_receptors, batched_ligands, batched_cats, batched_masks,
            batched_key_xyz, batched_key_indices, batched_binding_labels, combined_info)
 
