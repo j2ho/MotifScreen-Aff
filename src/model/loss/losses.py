@@ -5,10 +5,13 @@ ScreeningLoss = torch.nn.BCEWithLogitsLoss()
 # null gives ~ 0.1 when n == 5;  p=(0.5,0.0...) -> loss ~ 0.0275; p=(0.0,1.0,0.0...) -> loss ~ 0.25;
 def RankingLoss( ps, qs ): #p: pred q:
     eps = 1.0e-6
-    ps = torch.nn.functional.softmax(ps,dim=-1)+eps
-    qs = torch.nn.functional.softmax(qs,dim=-1)+eps
+    ps = torch.nn.functional.softmax(ps,dim=-1)
+    qs = torch.nn.functional.softmax(qs,dim=-1)
+    ps = torch.clamp(ps, min=eps, max=1.0-eps)
+    qs = torch.clamp(qs, min=eps, max=1.0-eps)
     loss = torch.sum(ps*torch.log(ps/qs + eps))
     return loss
+
 
 
 def ScreeningContrastLoss( embs, blabel, nK ):
@@ -85,7 +88,6 @@ def StructureLoss( Yrec, Ylig, nK, opt='mse'):
         loss1_sum = 10.0*torch.nn.functional.huber_loss(d,torch.zeros_like(d))
 
     mae = torch.sum(torch.abs(dY))/nK[0] # this is correct mae...
-
     return loss1_sum, mae
 
 def PairDistanceLoss( Dpred, X, nK, bin_min = -0.1, bin_size=0.25, bin_max=15.75 ):
