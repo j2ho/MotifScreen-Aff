@@ -42,6 +42,7 @@ class CrossValidationConfig:
     cross_eval_struct: bool = False
     cross_grid: float = 0.0
     nonnative_struct_weight: float = 0.2
+    motif_otf: bool = False
 
 
 @dataclass
@@ -235,7 +236,8 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             load_cross=config_dict.get('cross_validation', {}).get('load_cross', False),
             cross_eval_struct=config_dict.get('cross_validation', {}).get('cross_eval_struct', False),
             cross_grid=config_dict.get('cross_validation', {}).get('cross_grid', 0.0),
-            nonnative_struct_weight=config_dict.get('cross_validation', {}).get('nonnative_struct_weight', 0.2)
+            nonnative_struct_weight=config_dict.get('cross_validation', {}).get('nonnative_struct_weight', 0.2),
+            motif_otf=config_dict.get('cross_validation',{}).get('motif_otf', False)
         ),
 
         training=TrainingParamsConfig(
