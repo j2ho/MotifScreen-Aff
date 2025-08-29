@@ -1,4 +1,4 @@
-# src/model/model.py
+# src/model/models/msk1.py
 
 import sys
 import torch
@@ -186,7 +186,7 @@ class EndtoEndModel(nn.Module):
 
             # Ykey_s: B x K x 3; z_norm: B x N x K x d
             # z: B x N x K x d; z_mask: B x N x K
-            Ykey_s, z_norm = self.struct_module(z, z_mask, Ggrid, key_mask)
+        Ykey_s, z_norm = self.struct_module(z, z_mask, Ggrid, key_mask)
 
         # 4) final prediction head
         aff = self.class_module(z, h_grid_batched, h_key_batched,
