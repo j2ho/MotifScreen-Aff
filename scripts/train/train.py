@@ -1,9 +1,6 @@
 # train.py
 #!/usr/bin/env python
-"""
-Clean training script for MotifScreen-Aff using grouped parameter configuration.
-Uses the new TrainingDataSet with organized parameter structure.
-"""
+
 import os
 import sys
 import numpy as np
@@ -19,21 +16,20 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# Import only TrainingDataSet from your data module
-from src.data.dataset import TrainingDataSet, collate # Removed TrainingConfig, DataPaths, etc.
+from src.data.dataset import TrainingDataSet, collate 
 from src.model.models.msk1 import EndtoEndModel as MSK_1
-from src.model.models.msk_v2 import EndtoEndModel as MSK_2
+from src.model.models.msk_ab import EndtoEndModel as MSK_ablation
 
 from scripts.train.utils import count_parameters, to_cuda, calc_AUC
 import src.model.loss.losses as Loss
-from configs.config_loader import load_config, load_config_with_base, Config # Import your canonical Config class
+from configs.config_loader import load_config, load_config_with_base, Config #
 
 import warnings
 warnings.filterwarnings("ignore", message="sourceTensor.clone")
 
 import wandb
 
-def load_params(rank, config: Config): # Type hint for config is now your main Config
+def load_params(rank, config: Config): 
     """Load model, optimizer, and training state"""
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
@@ -41,10 +37,10 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
         if not config.training.silent:
             print("Loading MSK_1 model")
         model = MSK_1(config)
-    elif config.version == "v2.0":
+    elif config.version == "ablation":
         if not config.training.silent:
-            print("Loading MSK_2 model")
-        model = MSK_2(config)
+            print("Loading MSK_ablation model")
+        model = MSK_ablation(config)
     model.to(device)
 
     train_loss_empty = {
@@ -61,14 +57,12 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
         }
     epoch = 0
 
-    # Access learning rate and weight decay via config.training
     optimizer = torch.optim.Adam(
         model.parameters(), 
         lr=config.training.lr,
         weight_decay=config.training.weight_decay
     )
     
-    # Add learning rate scheduler based on config
     scheduler = None
     if config.training.scheduler.use_scheduler:
         if config.training.scheduler.scheduler_type == "ReduceLROnPlateau":
@@ -186,7 +180,7 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
     return model, optimizer, scheduler, epoch, train_loss, valid_loss
 
 
-def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for config is now your main Config
+def load_data(txt_file, world_size, rank, main_config: Config): 
     """Load dataset using grouped configuration"""
     from torch.utils import data
 
@@ -365,6 +359,14 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                             l_str_attmap_pos= config.losses.w_spread * Loss.SpreadLoss(keyxyz, rec_key_z, grid, nK)
                             l_str_attmap_neg = config.losses.w_spread * Loss.SpreadLoss_v2(keyxyz, rec_key_z, grid, nK)
                             l_str_attmap = l_str_attmap_pos + 0.2 *l_str_attmap_neg
+
+                    except Exception as e:
+                        print(f"Error in str loss calculation: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        pass
+                if bind_pred is not None:
+                    try:
                         # Access screening loss weights from config.losses
                         l_screen = Loss.ScreeningLoss(bind_pred[0], blabel)
                         l_screen_rank = Loss.RankingLoss(torch.sigmoid(bind_pred[0]), blabel)
@@ -372,9 +374,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                         Pbind = ['%4.2f' % float(a) for a in torch.sigmoid(bind_pred[0])]
                         Pt[source].append(float(torch.sigmoid(bind_pred[0][0]).cpu()))
                         Pf[source] += list(torch.sigmoid(bind_pred[0][1:]).cpu().detach().numpy())
-
                     except Exception as e:
-                        print(f"Error in loss calculation: {e}")
+                        print(f"Error in binding loss calculation: {e}")
                         import traceback
                         traceback.print_exc()
                         pass
@@ -431,20 +432,6 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                     # Add gradient clipping to prevent NaN and monitor gradient norm
                     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     
-                    # Monitor parameter norms and clip if necessary
-                    param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
-                    
-                    # Check for parameter explosion and apply clipping if needed
-                    if param_norm > config.training.max_param_norm:
-                        print(f"WARNING: Parameter norm {param_norm:.2f} exceeds threshold {config.training.max_param_norm}")
-                        # Clip parameters to prevent explosion
-                        with torch.no_grad():
-                            for param in model.parameters():
-                                if param.requires_grad:
-                                    param.data.clamp_(-10.0, 10.0)
-                        param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
-                        print(f"After clipping, parameter norm: {param_norm:.2f}")
-                    
                     optimizer.step()
                     optimizer.zero_grad()
 
@@ -474,7 +461,6 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                             "train_step/loss_l2_penalty": float(l2_penalty.cpu().detach().numpy()),
                             "train_step/loss_motif_penalty": float(motif_penalty.cpu().detach().numpy()),
                             "train_step/grad_norm": float(grad_norm),
-                            "train_step/param_norm": param_norm,
                             "train_step/learning_rate": optimizer.param_groups[0]['lr']
                         }
 
@@ -552,7 +538,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
     return temp_loss, Pt, Pf
 
 
-def train_model(rank, world_size, config: Config): # Type hint for config is now your main Config
+def train_model(rank, world_size, config: Config): 
     gpu = rank % world_size
     dist.init_process_group(backend='gloo', world_size=world_size, rank=rank)
 
@@ -802,7 +788,7 @@ def main():
         config.model_note = args.model_note
     print(f"DGL version: {dgl.__version__}")
     print(f"Using config: {args.config}")
-    print(f"Using model: MSK{config.version}")
+    print(f"Using model: MSK_{config.version}")
     print(f"Training dropout: {config.dropout_rate}")
 
     print("\n=== Grouped Parameter Configuration ===")

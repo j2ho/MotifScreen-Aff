@@ -1,12 +1,4 @@
-# train_opt.py - OPTIMIZED VERSION
-#!/usr/bin/env python
-"""
-Optimized training script for MotifScreen-Aff with performance improvements:
-- Eliminated CUDA synchronization bottlenecks
-- Reduced device transfers
-- Improved memory operations
-- Better GPU utilization
-"""
+
 import os
 import sys
 import numpy as np
@@ -22,12 +14,9 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# Import only TrainingDataSet from your data module
 from src.data.dataset_opt import TrainingDataSet, collate
-# from src.model.models.msk1_opt import EndtoEndModel as MSK_1_OPT
-# from src.model.models.msk1 import EndtoEndModel as MSK_1
+from src.model.models.msk1 import EndtoEndModel as MSK_1
 from src.model.models.msk_ab import EndtoEndModel as MSK_AB
-# from src.model.models.msk_v2 import EndtoEndModel as MSK_2
 
 from scripts.train.utils import count_parameters, to_cuda, calc_AUC
 import src.model.loss.losses as Loss
@@ -44,15 +33,11 @@ def load_params(rank, config: Config):
 
     if config.version == "v1.0":
         if not config.training.silent:
-            print("Loading MSK_1 model (optimized)")
-        model = MSK_AB(config)
-    elif config.version == "v1.0_baseline":
+            print("Loading MSK_1 model (default)")
+        model = MSK_1(config)
+    elif config.version == "ablation":
         if not config.training.silent:
-            print("Loading MSK_1 model (baseline)")
-        model = MSK_AB(config)
-    elif config.version == "v2.0":
-        if not config.training.silent:
-            print("Loading MSK_2 model")
+            print("Loading MSK_1 model (ablation)")
         model = MSK_AB(config)
     model.to(device)
 
@@ -423,34 +408,42 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                             nK = nK.squeeze(dim=0)
 
                         if eval_struct:
+                            # Access struct_loss from config.losses
                             l_str_dist, key_mae = Loss.StructureLoss(keyxyz_pred, keyxyz, nK, opt=config.losses.struct_loss)
+                            # Access w_Dkey from config.losses
                             l_str_pair = config.losses.w_Dkey * Loss.PairDistanceLoss(key_pairdist_pred, keyxyz, nK)
 
+                            # Access w_spread from config.losses
                             l_str_attmap_pos= config.losses.w_spread * Loss.SpreadLoss(keyxyz, rec_key_z, grid, nK)
                             l_str_attmap_neg = config.losses.w_spread * Loss.SpreadLoss_v2(keyxyz, rec_key_z, grid, nK)
                             l_str_attmap = l_str_attmap_pos + 0.2 *l_str_attmap_neg
-                        
-                        l_screen = Loss.ScreeningLoss(bind_pred[0], blabel)
-                        l_screen_rank = Loss.RankingLoss(torch.sigmoid(bind_pred[0]), blabel)
-                        l_screen_cont = Loss.ScreeningContrastLoss(bind_pred[1], blabel, nK)
-                        
-                        # OPTIMIZED: Reduce CPU synchronization for probabilities
-                        bind_probs = torch.sigmoid(bind_pred[0])
-                        Pbind = ['%4.2f' % float(a.item()) for a in bind_probs]  # Single .item() per element
-                        Pt[source].append(float(bind_probs[0].item()))
-                        Pf[source] += bind_probs[1:].cpu().detach().numpy().tolist()
 
                     except Exception as e:
-                        print(f"Error in loss calculation: {e}")
+                        print(f"Error in str loss calculation: {e}")
                         import traceback
                         traceback.print_exc()
                         pass
-
+                if bind_pred is not None:
+                    try:
+                        # Access screening loss weights from config.losses
+                        l_screen = Loss.ScreeningLoss(bind_pred[0], blabel)
+                        l_screen_rank = Loss.RankingLoss(torch.sigmoid(bind_pred[0]), blabel)
+                        l_screen_cont = Loss.ScreeningContrastLoss(bind_pred[1], blabel, nK)
+                        Pbind = ['%4.2f' % float(a) for a in torch.sigmoid(bind_pred[0])]
+                        Pt[source].append(float(torch.sigmoid(bind_pred[0][0]).cpu()))
+                        Pf[source] += list(torch.sigmoid(bind_pred[0][1:]).cpu().detach().numpy())
+                    except Exception as e:
+                        print(f"Error in binding loss calculation: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        pass
+                    
                 l2_penalty = torch.tensor(0.0, device=device)
                 if is_train:
                     for param in model.parameters():
                         l2_penalty += torch.norm(param)
 
+                # Access all loss weights from config.losses
                 loss = (config.losses.w_cat * (l_cat_pos + l_cat_neg + l_cat_contrast +
                                        config.losses.w_penalty * (l2_penalty + motif_penalty)) +
                         config.losses.w_str * (l_str_dist + l_str_pair + l_str_attmap) +
@@ -874,7 +867,7 @@ def main():
         config.model_note = args.model_note
     print(f"DGL version: {dgl.__version__}")
     print(f"Using config: {args.config}")
-    print(f"Using model: MSK{config.version} (OPTIMIZED)")
+    print(f"Using model: MSK{config.version}")
     print(f"Training dropout: {config.dropout_rate}")
 
     print("\n=== Grouped Parameter Configuration ===")
