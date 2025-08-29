@@ -1,5 +1,5 @@
 model:
-  name: "ablation_studies"
+  name: "nostr_msk"
   version: "ablation"
 
   common:
@@ -53,7 +53,7 @@ training:
   ddp: true
   silent: false
   amp: false
-  wandb_mode: "online"  # Options: "online", "disabled", "offline"
+  wandb_mode: "offline"  # Options: "online", "disabled", "offline"
   weight_decay: 1.0e-4  # L2 regularization via optimizer weight decay
   max_param_norm: 20.0  # Maximum parameter norm before warning
   custom_init: false  # Custom initialization flag, can be used to trigger specific init logic
@@ -118,7 +118,7 @@ losses:
 ablation:
   # Module ablations
   enable_structure_module: false      # Enable/disable StructModule
-  enable_keyatom_trimming: false      # Enable/disable trimming to key atoms
+  enable_keyatom_trimming: true      # Enable/disable trimming to key atoms
   enable_lig_to_key_attn: true       # Enable/disable ligand-to-key attention
   enable_trigon_lig: true            # Enable/disable initial trigon module on all ligand atoms
   enable_trigon_key_layers: true     # Enable/disable trigon layers for key atoms
