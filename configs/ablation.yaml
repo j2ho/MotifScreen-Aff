@@ -1,6 +1,6 @@
 model:
-  name: "msk_opt"
-  version: "v1.0"
+  name: "ablation_studies"
+  version: "ablation"
 
   common:
     dropout_rate: 0.2
