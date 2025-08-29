@@ -6,7 +6,6 @@ import traceback
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
-# from dataclasses import dataclass # No longer needed here if imported from config
 
 import numpy as np
 import torch
@@ -17,12 +16,11 @@ import scipy.spatial
 import src.data.types as types
 import src.data.utils as myutils
 import src.data.kappaidx as kappaidx
-from configs.config_loader import Config, DataPathsConfig, GraphParamsConfig, DataProcessingConfig, DataAugmentationConfig, CrossValidationConfig # Import your canonical config classes
+from configs.config_loader import Config, DataPathsConfig, GraphParamsConfig, DataProcessingConfig, DataAugmentationConfig, CrossValidationConfig 
 
 logger = logging.getLogger(__name__)
 
 class MolecularLoader:
-    # Change config type hint to relevant sub-config or general Config
     def __init__(self, config_paths: DataPathsConfig, config_processing: DataProcessingConfig, config_augmentation: DataAugmentationConfig):
         self.config_paths = config_paths
         self.config_processing = config_processing
@@ -41,10 +39,14 @@ class MolecularLoader:
 
     def find_keyatomf(self, pname: str, source: str) -> Optional[str]:
         # Access config via self.config_paths
+        # search_paths = [f'{self.config_paths.datapath}/{source}/{self.config_paths.keyatomf}',
+        #                 f'{self.config_paths.datapath}/{source}/{pname}/{pname}.{self.config_paths.keyatomf}',
+        # ]
         search_paths = [f'{self.config_paths.datapath}/{source}/{self.config_paths.keyatomf}',
                         f'{self.config_paths.datapath}/{source}/{pname}/{pname}.{self.config_paths.keyatomf}',
+                        f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{pname}.{self.config_paths.keyatomf}',
+                        f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_qh/{pname}.{self.config_paths.keyatomf}',
         ]
-
         for path in search_paths:
             if os.path.exists(path):
                 return path
@@ -657,6 +659,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             decoys = self.decoys.get(pname, [])
         elif mol2_type == 'batch':
             mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/{active_ligand}.mol2"
+            # mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
             if os.path.exists(mol2_file):
                 active_and_decoys = myutils.read_mol2_batch(mol2_file, tag_only=True)[-1]
                 active = [active_and_decoys[0]]
@@ -678,6 +681,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         pname = target.split('/')[1]
         active_ligand = ligands[0]
         mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/{active_ligand}.mol2"
+        #mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
         try:
             mol_data = self.loader.read_mol2_batch(mol2_file, ligands)
             if mol_data is None:
