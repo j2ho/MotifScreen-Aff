@@ -346,7 +346,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 pnames = info["pname"]
                 source = info['source'][0]
                 eval_struct = info['eval_struct'][0]
-
+                print (f"Rank {rank} processing {pnames[0]} from {source} | Struct Eval: {eval_struct}")
                 t1 = time.time()
                 keyxyz_pred, key_pairdist_pred, rec_key_z, motif_pred, bind_pred, absaff_pred = model(
                     Grec, Glig, keyidx, grididx,
@@ -426,7 +426,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 if bind_pred is not None:
                     try:
                         # Access screening loss weights from config.losses
-                        l_screen = Loss.ScreeningLoss(bind_pred[0], blabel)
+                        l_screen = Loss.ScreeningLoss(bind_pred[0], blabel) # BCEwithlogits, has sigmoid inside
                         l_screen_rank = Loss.RankingLoss(torch.sigmoid(bind_pred[0]), blabel)
                         l_screen_cont = Loss.ScreeningContrastLoss(bind_pred[1], blabel, nK)
                         Pbind = ['%4.2f' % float(a) for a in torch.sigmoid(bind_pred[0])]
