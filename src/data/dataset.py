@@ -79,6 +79,7 @@ class MolecularLoader:
                 drop_H=self.config_processing.drop_H,
                 tags_read=tags
             )
+            elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read =data
             if self.config_processing.store_memory:
                 self._cache_mol2_data(mol2_path, data)
             return data
@@ -115,10 +116,11 @@ class MolecularLoader:
 
 class GraphBuilder:
     """Constructs DGL graphs from molecular data"""
-    def __init__(self, config_graph: GraphParamsConfig, config_augmentation: DataAugmentationConfig, config_processing: DataProcessingConfig):
+    def __init__(self, config_graph: GraphParamsConfig, config_augmentation: DataAugmentationConfig, config_processing: DataProcessingConfig, static: bool):
         self.config_graph = config_graph
         self.config_augmentation = config_augmentation
         self.config_processing = config_processing
+        self.static = static
 
     def build_ligand_graph(self, mol_data: Tuple, name: str = "") -> dgl.DGLGraph:
         try:
@@ -138,6 +140,13 @@ class GraphBuilder:
             global_features = self._compute_global_features(elems, qs, bonds, borders, xyz, atypes)
             setattr(graph, "gdata", torch.tensor(global_features).float())
             graph.ndata['Y'] = torch.zeros(len(elems), 3)
+
+            if (graph.in_degrees() == 0).any():
+                import traceback
+                logger.error(f"Graph contains 0-in-degree")
+                #traceback.print_exc()
+                return None
+            
             return graph
         except Exception as e:
             import traceback
@@ -233,6 +242,7 @@ class GraphBuilder:
         elem_indices = [myutils.ELEMS.index(elem) for elem in elems]
         elem_onehot = np.eye(len(myutils.ELEMS))[elem_indices]
         features.append(elem_onehot)
+
         return np.concatenate(features, axis=-1)
 
     def _compute_ligand_edge_features(self, bonds: List, borders: List,
@@ -330,7 +340,11 @@ class GraphBuilder:
             all_xyz = np.concatenate([xyz, grids])
             kd = scipy.spatial.cKDTree(all_xyz)
             kd_grids = scipy.spatial.cKDTree(grids)
-            indices = np.concatenate(kd_grids.query_ball_tree(kd, self.config_graph.ball_radius))
+
+            ball_radius =  self.config_graph.ball_radius
+            if not self.static:
+                ball_radius = ball_radius + self.config_graph.ball_radius_var*2.0*(np.random.random()-0.5)
+            indices = np.concatenate(kd_grids.query_ball_tree(kd, ball_radius))
             selected_indices = list(np.unique(indices).astype(np.int16))
             if len(selected_indices) > self.config_graph.maxnode:
                 logger.error(f"Receptor nodes {len(selected_indices)} exceeds max {self.config_graph.maxnode}")
@@ -403,6 +417,7 @@ class GraphBuilder:
 
 class TrainingDataSet(torch.utils.data.Dataset):
     def __init__(self, targets: List[str], ligands: List = None,
+                 static: bool = False,
                  config: Config = None): 
         """
         Initialize training dataset with grouped parameters
@@ -415,6 +430,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         if config is None:
             raise ValueError("Config object must be provided to TrainingDataSet.")
         self.config = config
+        self.static = static #true if used as validation
 
         self.targets = targets
         self.ligands = ligands
@@ -429,7 +445,8 @@ class TrainingDataSet(torch.utils.data.Dataset):
         self.graph_builder = GraphBuilder(
             config_graph=self.config.graph,
             config_augmentation=self.config.augmentation,
-            config_processing=self.config.processing # Passed to graph_builder for drop_H in ligand graph
+            config_processing=self.config.processing, # Passed to graph_builder for drop_H in ligand graph
+            static=self.static
         )
 
         self.crossactives = self._load_crossactives() if self.config.cross_validation.load_cross else {}
@@ -470,15 +487,10 @@ class TrainingDataSet(torch.utils.data.Dataset):
             return self._get_null_result(pname)
         grids, cats, mask = grid_data
 
-        # Use augmentation config directly
-        if self.config.augmentation.randomize_grid > 1e-3:
-            grids = self._apply_grid_randomization(grids)
-
         ligand_result = self._process_ligands(target, self.ligands[index], keyatoms_dict)
         if ligand_result is None:
             return self._get_null_result(pname)
         ligand_graphs, native_graph, key_xyz, key_indices, binding_labels, ligand_info = ligand_result
-
         origin = torch.tensor(np.mean(grids, axis=0)).float()
 
         # processed already
@@ -530,11 +542,13 @@ class TrainingDataSet(torch.utils.data.Dataset):
         try:
             sample = np.load(gridinfo_path, allow_pickle=True)
             grids = sample['xyz']
+            if (not self.static) and self.config.augmentation.randomize_grid > 1e-3:
+                grids = self._apply_grid_randomization(grids)
+                
             cats, mask = None, None
-            if self.config.cross_validation.motif_otf and 'PHcoord' in sample:
-                cats = self._label_PH(grids,sample.get('PHcoord'), sample.get('PHtype'))
-                #cats = torch.tensor(cats).float()
-                #mask = torch.sum(cats>0,axis=1).float() #0 or 1
+            if (not self.static) and self.config.cross_validation.motif_otf and 'PHcoord' in sample:
+                cats = self._label_PH(grids, sample.get('PHcoord'), sample.get('PHtype'))
+                
             elif 'labels' in sample or 'label' in sample:
                 cats = sample.get('labels', sample.get('label'))
             else:
@@ -551,7 +565,29 @@ class TrainingDataSet(torch.utils.data.Dataset):
             cats = torch.tensor(cats).float()
             mask = torch.tensor(mask).float()
 
+        # for debug purpose
+        #self._report_grid_and_motif(gridinfo_path.split('/')[-1][:-4]+'.org.pdb',
+        #                            sample['xyz'], sample.get('labels', sample.get('label')))
+        #self._report_grid_and_motif(gridinfo_path.split('/')[-1][:-4]+'.aug.pdb',
+        #                            grids, cats)
+
         return grids, cats, mask
+
+    def _report_grid_and_motif(self, outf: str, grids: np.ndarray, cats: np.ndarray,
+                               threshold: float = 0.01):
+        out = open(outf,'w')
+        nlabeled = 0
+        form = "HETATM %4d  %2s  %2s  X%4d    %8.3f%8.3f%8.3f  1.00  %5.2f\n"
+        for i,(l,grid) in enumerate(zip(cats,grids)):
+            out.write(form%(i,'H','H',i,grid[0],grid[1],grid[2],0.0))
+            
+            if max(l) < threshold: continue
+            for j in np.where(l>threshold)[0]:
+                B = np.sqrt(l[j])
+                nlabeled += 1
+                mname = ['H','CB','CA','CD','CH','CR'][j]
+                out.write(form%(i,mname,mname,i,grid[0],grid[1],grid[2],B))
+        out.close()
 
     def _label_PH(self, grids, PHxyz, PHtypes, sig=1.0, out=None):
         indices_true, indices_fake = [],[]
@@ -591,7 +627,9 @@ class TrainingDataSet(torch.utils.data.Dataset):
         return label
     
     def _apply_grid_randomization(self, grids: np.ndarray) -> np.ndarray:
-        rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(len(grids), 3))
+        # uniform translation
+        #rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(len(grids), 3))
+        rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(3))
         return grids + rand_xyz
 
     def _process_ligands(self, target: str, ligands: List,
@@ -648,7 +686,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             data_type = 'model'
         elif source in ['biolip','pdbbind']:
             data_type = 'structure'
-        elif source in ['chembl']:
+        elif source in ['chembl','dude']:
             data_type = 'activity'
 
         (active_ligand, mol2_type) = ligands[0], ligands[1] if len(ligands) > 1 else 'single'
@@ -819,7 +857,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         source = target.split('/')[0]
         if source in ['docked', 'biolip', 'pdbbind']:
             eval_struct = 1
-        elif source in ['chembl']:
+        elif source in ['chembl','dude']:
             eval_struct = 0
         info = {
             'pname': pname,

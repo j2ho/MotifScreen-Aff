@@ -4,10 +4,14 @@ import torch.nn as nn
 class ClassModule( nn.Module ):
     def __init__(self, m, c,
                  classification_mode='ligand',
-                 n_lig_emb=4 ):
+                 n_lig_emb=4,
+                 dropout_rate=0.0,
+                 dropoutmode='none'):
         super().__init__()
         # m: originally called "embedding_channels"
         self.classification_mode = classification_mode
+        self.dropout_rate = dropout_rate
+        self.dropoutmode = dropoutmode
 
         if self.classification_mode == 'former':
             self.linear_z1 = nn.Linear(c, 1)
@@ -23,11 +27,25 @@ class ClassModule( nn.Module ):
             
             self.Gamma = nn.Parameter( torch.Tensor([0.1]) )
             
+        self.dropoutlayer = nn.Dropout(dropout_rate)
             
     def forward( self, z, hs_grid_batched, hs_key_batched,
                  lig_rep=None,
-                 w_mask=None ):
+                 w_mask=None,
+                 drop_out=False ):
 
+        if drop_out:
+            # let's not make it too harsh
+            if self.dropoutmode =='basic':
+                lig_rep = self.dropoutlayer(lig_rep)
+            
+            elif self.dropoutmode =='harsh':
+                lig_rep = self.dropoutlayer(lig_rep)
+                hs_key_batched = self.dropoutlayer(hs_key_batched)
+                hs_grid_batched = self.dropoutlayer(hs_grid_batched)
+            else: #none
+                pass
+            
         if self.classification_mode == 'former':
             att = self.linear_z1(z).squeeze(-1)
             

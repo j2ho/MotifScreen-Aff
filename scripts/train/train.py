@@ -45,57 +45,23 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
         if not config.training.silent:
             print("Loading MSK_2 model")
         model = MSK_2(config)
+
     model.to(device)
 
     train_loss_empty = {
         "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
-        "L2Penalty": [], "MotifPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
     valid_loss_empty = {
         "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
-        "L2Penalty": [], "MotifPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
     epoch = 0
 
-    # Access learning rate and weight decay via config.training
-    optimizer = torch.optim.Adam(
-        model.parameters(), 
-        lr=config.training.lr,
-        weight_decay=config.training.weight_decay
-    )
-    
-    # Add learning rate scheduler based on config
-    scheduler = None
-    if config.training.scheduler.use_scheduler:
-        if config.training.scheduler.scheduler_type == "ReduceLROnPlateau":
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, 
-                mode='min', 
-                factor=config.training.scheduler.factor,
-                patience=config.training.scheduler.patience,
-                verbose=True,
-                min_lr=config.training.scheduler.min_lr,
-                threshold=config.training.scheduler.threshold
-            )
-        elif config.training.scheduler.scheduler_type == "StepLR":
-            scheduler = torch.optim.lr_scheduler.StepLR(
-                optimizer,
-                step_size=config.training.scheduler.step_size,
-                gamma=config.training.scheduler.gamma
-            )
-        elif config.training.scheduler.scheduler_type == "CosineAnnealingLR":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=config.training.scheduler.T_max
-            )
-        else:
-            print(f"Unknown scheduler type: {config.training.scheduler.scheduler_type}. No scheduler will be used.")
-    else:
-        print("Scheduler disabled in config.")
+    # Access learning rate via config.training.lr
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.lr)
 
     # Checkpoint path uses config.modelname and config.version
     checkpoint_path = join("models", f"{config.modelname}{config.version}", "model.pkl")
@@ -110,19 +76,12 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
         model_keys = list(model_dict.keys())
 
         for key in checkpoint["model_state_dict"]:
-            if key.startswith("module."):
-                newkey = key.replace('module.', 'se3_Grid.')
-                trained_dict[newkey] = checkpoint["model_state_dict"][key]
-            elif "tranistion." in key:
-                newkey = key.replace('tranistion.', 'transition.')
-                trained_dict[newkey] = checkpoint["model_state_dict"][key]
-            else:
-                if key in model_keys:
-                    wts = checkpoint["model_state_dict"][key]
-                    if wts.shape == model_dict[key].shape:
-                        trained_dict[key] = wts
-                    else:
-                        print("skip", key)
+            if key in model_keys:
+                wts = checkpoint["model_state_dict"][key]
+                if wts.shape == model_dict[key].shape:
+                    trained_dict[key] = wts
+                else:
+                    print("skip", key)
 
         nnew, nexist = 0, 0
         for key in model_keys:
@@ -161,32 +120,19 @@ def load_params(rank, config: Config): # Type hint for config is now your main C
             os.makedirs(model_dir, exist_ok=True)
 
     if epoch == 0:
-        # Improved parameter initialization to prevent parameter explosion
         for i, (name, layer) in enumerate(model.named_modules()):
-            if isinstance(layer, torch.nn.Linear):
-                if "class" in name or 'Xform' in name:
-                    # Scale down output layers more aggressively
-                    layer.weight.data *= 0.1
-                elif "trigon" in name.lower() or "attention" in name.lower():
-                    # Special initialization for attention layers to prevent explosion
-                    torch.nn.init.xavier_uniform_(layer.weight, gain=0.5)
-                    if layer.bias is not None:
-                        torch.nn.init.zeros_(layer.bias)
-            elif isinstance(layer, torch.nn.LayerNorm):
-                # Ensure LayerNorm is properly initialized
-                if layer.weight is not None:
-                    torch.nn.init.ones_(layer.weight)
-                if layer.bias is not None:
-                    torch.nn.init.zeros_(layer.bias)
+            if isinstance(layer, torch.nn.Linear) and \
+               ("class" in name or 'Xform' in name):
+                layer.weight.data *= 0.1
 
     if rank == 0:
         print("Nparams:", count_parameters(model))
         print("Loaded")
 
-    return model, optimizer, scheduler, epoch, train_loss, valid_loss
+    return model, optimizer, epoch, train_loss, valid_loss
 
 
-def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for config is now your main Config
+def load_data(txt_file, world_size, rank, main_config: Config, static: bool): # Type hint for config is now your main Config
     """Load dataset using grouped configuration"""
     from torch.utils import data
 
@@ -221,7 +167,8 @@ def load_data(txt_file, world_size, rank, main_config: Config): # Type hint for 
     dataset = TrainingDataSet(
         targets=targets, # 'targets' and 'ligands' need to be defined outside this snippet's scope
         ligands=ligands, # Same for 'ligands'
-        config=main_config # Pass the entire main config object
+        config=main_config, # Pass the entire main config object
+        static=static
     )
 
     # Dataloader parameters now come from main_config.dataloader
@@ -247,7 +194,6 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
     """Train for one epoch"""
     temp_loss = {
         "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
-        "L2Penalty": [], "MotifPenalty": [],
         "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
         "Screen": [], "ScreenC": [], "ScreenR": []
         }
@@ -259,8 +205,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
         accum = 1
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
-    Pt = {'chembl': [], 'biolip': [], 'pdbbind': []}
-    Pf = {'chembl': [], 'biolip': [], 'pdbbind': []}
+    Pt = {'chembl': [], 'biolip': [], 'pdbbind': [], 'dude': []}
+    Pf = {'chembl': [], 'biolip': [], 'pdbbind': [], 'dude': []}
 
     for i, inputs in enumerate(loader):
         if inputs is None:
@@ -386,7 +332,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
                 # Access all loss weights from config.losses
                 loss = (config.losses.w_cat * (l_cat_pos + l_cat_neg + l_cat_contrast +
-                                       config.losses.w_penalty * (l2_penalty + motif_penalty)) +
+                                       config.losses.w_motif_penalty * motif_penalty) +
+                        config.losses.w_penalty * l2_penalty +
                         config.losses.w_str * (l_str_dist + l_str_pair + l_str_attmap) +
                         config.losses.w_screen * l_screen +
                         config.losses.w_screen_ranking * l_screen_rank +
@@ -409,9 +356,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 temp_loss["CatP"].append(l_cat_pos.cpu().detach().numpy())
                 temp_loss["CatN"].append(l_cat_neg.cpu().detach().numpy())
                 temp_loss["CatCont"].append(l_cat_contrast.cpu().detach().numpy())
-                temp_loss["NormPenalty"].append((motif_penalty + l2_penalty).cpu().detach().numpy())
-                temp_loss["L2Penalty"].append(l2_penalty.cpu().detach().numpy())
-                temp_loss["MotifPenalty"].append(motif_penalty.cpu().detach().numpy())
+                temp_loss["NormPenalty"].append(l2_penalty.cpu().detach().numpy())
 
                 if l_str_dist > 0.0:
                     temp_loss["Str"].append(l_str_dist.cpu().detach().numpy())
@@ -428,22 +373,8 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                     loss.requires_grad_(True)
                     loss.backward()
                     
-                    # Add gradient clipping to prevent NaN and monitor gradient norm
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    
-                    # Monitor parameter norms and clip if necessary
-                    param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
-                    
-                    # Check for parameter explosion and apply clipping if needed
-                    if param_norm > config.training.max_param_norm:
-                        print(f"WARNING: Parameter norm {param_norm:.2f} exceeds threshold {config.training.max_param_norm}")
-                        # Clip parameters to prevent explosion
-                        with torch.no_grad():
-                            for param in model.parameters():
-                                if param.requires_grad:
-                                    param.data.clamp_(-10.0, 10.0)
-                        param_norm = sum(p.norm().item() for p in model.parameters() if p.requires_grad)
-                        print(f"After clipping, parameter norm: {param_norm:.2f}")
+                    # Add gradient clipping to prevent NaN
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     
                     optimizer.step()
                     optimizer.zero_grad()
@@ -470,12 +401,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                             "train_step/loss_cat_pos": float(l_cat_pos.cpu().detach().numpy()),
                             "train_step/loss_cat_neg": float(l_cat_neg.cpu().detach().numpy()),
                             "train_step/loss_cat_contrast": float(l_cat_contrast.cpu().detach().numpy()),
-                            "train_step/loss_norm_penalty": float((motif_penalty + l2_penalty).cpu().detach().numpy()),
-                            "train_step/loss_l2_penalty": float(l2_penalty.cpu().detach().numpy()),
-                            "train_step/loss_motif_penalty": float(motif_penalty.cpu().detach().numpy()),
-                            "train_step/grad_norm": float(grad_norm),
-                            "train_step/param_norm": param_norm,
-                            "train_step/learning_rate": optimizer.param_groups[0]['lr']
+                            "train_step/loss_norm_penalty": float((motif_penalty + l2_penalty).cpu().detach().numpy())
                         }
 
                         if l_str_dist > 0.0:
@@ -495,17 +421,28 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
 
                         wandb.log(step_metrics)
 
-                    print (f"Rank {rank} TRAIN Epoch: [{epoch:2d}/{config.training.max_epoch:2d}], " # Access max_epoch from config.training
-                          f"Batch: [{b_count:2d}/{len(loader):2d}], loss: {np.sum(temp_loss['total'][-accum:]):8.3f} "
-                          f"(Category Pos/Neg/Contrast: {np.sum(temp_loss['CatP'][-accum:]):6.1f}/"
-                          f"{np.sum(temp_loss['CatN'][-accum:]):6.1f}/{np.sum(temp_loss['CatCont'][-accum:]):6.3f}|"
-                          f"Struct Dist/Mae/Pair: {np.sum(temp_loss['Str'][-accum:]):6.1f}/"
-                          f"{np.sum(temp_loss['StrMAE'][-accum:]):5.2f}/"
-                          f"{np.sum(temp_loss['StrPair'][-accum:]):6.3f}|"
-                          f"Screening bce/rank/Contrast: {np.sum(temp_loss['Screen'][-accum:]):4.2f}/"
-                          f"{np.sum(temp_loss['ScreenR'][-accum:]):4.2f}/"
-                          f"{np.sum(temp_loss['ScreenC'][-accum:]):6.3f}|"
-                          f"{pnames[0]}:", ' '.join(Pbind), ','.join(info['ligands'][0]))
+                    if eval_struct:
+                        print (f"Rank {rank} TRAIN Epoch: [{epoch:2d}/{config.training.max_epoch:2d}], " # Access max_epoch from config.training
+                               f"Batch: [{b_count:2d}/{len(loader):2d}], loss: {np.sum(temp_loss['total'][-accum:]):8.3f} "
+                               f"(Cat Pos/Neg/Cntrst: {np.sum(temp_loss['CatP'][-accum:]):5.1f}/"
+                               f"{np.sum(temp_loss['CatN'][-accum:]):5.1f}/{np.sum(temp_loss['CatCont'][-accum:]):5.3f}|"
+                               f"Strc Mae/Pair: "
+                               f"{np.sum(temp_loss['StrMAE'][-accum:]):5.2f}/"
+                               f"{np.sum(temp_loss['StrPair'][-accum:]):5.2f}|"
+                               f"Scrn bce/rank/Ctrs: {np.sum(temp_loss['Screen'][-accum:]):4.2f}/"
+                               f"{np.sum(temp_loss['ScreenR'][-accum:]):4.2f}/"
+                               f"{np.sum(temp_loss['ScreenC'][-accum:]):4.2f}|"
+                               f"{pnames[0]}:", ' '.join(Pbind), ','.join(info['ligands'][0]))
+                    else:
+                        print (f"Rank {rank} TRAIN Epoch: [{epoch:2d}/{config.training.max_epoch:2d}], " # Access max_epoch from config.training
+                               f"Batch: [{b_count:2d}/{len(loader):2d}], loss: {np.sum(temp_loss['total'][-accum:]):8.3f} "
+                               f"(Cat Pos/Neg/Cntrst: {np.sum(temp_loss['CatP'][-accum:]):5.1f}/"
+                               f"{np.sum(temp_loss['CatN'][-accum:]):5.1f}/{np.sum(temp_loss['CatCont'][-accum:]):5.3f}|"
+                               "                          |"
+                               f"Scrn bce/rank/Ctrs: {np.sum(temp_loss['Screen'][-accum:]):4.2f}/"
+                               f"{np.sum(temp_loss['ScreenR'][-accum:]):4.2f}/"
+                               f"{np.sum(temp_loss['ScreenC'][-accum:]):4.2f}|"
+                               f"{pnames[0]}:", ' '.join(Pbind), ','.join(info['ligands'][0]))
 
                 elif (b_count + 1) % accum == 0:
                     if rank == 0 and not config.training.debug: # Access debug from config.training
@@ -566,7 +503,6 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                 "model_version": config.version,
                 "model_name": config.modelname,
                 "learning_rate": config.training.lr, # Access LR from config.training
-                "weight_decay": config.training.weight_decay, # Weight decay parameter
                 "max_epochs": config.training.max_epoch, # Access max_epoch from config.training
                 "batch_size": config.dataloader.batch_size, # Access batch_size from config.dataloader
                 "dropout_rate": config.dropout_rate, # This is a direct attribute
@@ -582,7 +518,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
 
-    model, optimizer, scheduler, start_epoch, train_loss, valid_loss = load_params(rank, config)
+    model, optimizer, start_epoch, train_loss, valid_loss = load_params(rank, config)
 
     # Access ddp from config.training
     if config.training.ddp:
@@ -599,11 +535,11 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
         valid_datasetf = config.valid_file
 
     # Load data now takes the main config object
-    train_loader, weights_train = load_data(train_datasetf, world_size, rank, config)
-    valid_loader, weights_valid = load_data(valid_datasetf, world_size, rank, config)
+    train_loader, weights_train = load_data(train_datasetf, world_size, rank, config, static=False)
+    valid_loader, weights_valid = load_data(valid_datasetf, world_size, rank, config, static=True)
 
-    auc_train = {'chembl': [], 'biolip': [], 'pdbbind': []}
-    auc_valid = {'chembl': [], 'biolip': [], 'pdbbind': []}
+    auc_train = {'chembl': [], 'biolip': [], 'pdbbind': [], 'dude':[]}
+    auc_valid = {'chembl': [], 'biolip': [], 'pdbbind': [], 'dude':[]}
 
     global_step = start_epoch * len(train_loader)
 
@@ -636,9 +572,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                     "train/loss_cat_pos": np.mean(train_loss['CatP'][-1]),
                     "train/loss_cat_neg": np.mean(train_loss['CatN'][-1]),
                     "train/loss_cat_contrast": np.mean(train_loss['CatCont'][-1]),
-                    "train/loss_norm_penalty": np.mean(train_loss['NormPenalty'][-1]),
-                    "train/loss_l2_penalty": np.mean(train_loss['L2Penalty'][-1]),
-                    "train/loss_motif_penalty": np.mean(train_loss['MotifPenalty'][-1])
+                    "train/loss_norm_penalty": np.mean(train_loss['NormPenalty'][-1])
                 }
 
                 if len(train_loss['Str'][-1]) > 0:
@@ -691,9 +625,7 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
                     "valid/loss_cat_pos": np.mean(valid_loss['CatP'][-1]),
                     "valid/loss_cat_neg": np.mean(valid_loss['CatN'][-1]),
                     "valid/loss_cat_contrast": np.mean(valid_loss['CatCont'][-1]),
-                    "valid/loss_norm_penalty": np.mean(valid_loss['NormPenalty'][-1]),
-                    "valid/loss_l2_penalty": np.mean(valid_loss['L2Penalty'][-1]),
-                    "valid/loss_motif_penalty": np.mean(valid_loss['MotifPenalty'][-1])
+                    "valid/loss_norm_penalty": np.mean(valid_loss['NormPenalty'][-1])
                 }
 
                 if len(valid_loss['Str'][-1]) > 0:
@@ -719,17 +651,10 @@ def train_model(rank, world_size, config: Config): # Type hint for config is now
 
         print("***SUM***")
         print(f"Train loss | {np.mean(train_loss['total'][-1]):7.4f} | Valid loss | {np.mean(valid_loss['total'][-1]):7.4f}")
-        
-        # Update learning rate scheduler based on validation loss
-        if rank == 0 and scheduler is not None:
-            if config.training.scheduler.scheduler_type == "ReduceLROnPlateau":
-                scheduler.step(np.mean(valid_loss['total'][-1]))
-            elif config.training.scheduler.scheduler_type in ["StepLR", "CosineAnnealingLR"]:
-                scheduler.step()  # These schedulers don't take metrics
 
         if rank == 0:
             auc_l = "AUC: "
-            for key in ['pdbbind', 'chembl', 'biolip']:
+            for key in ['pdbbind', 'chembl', 'biolip', 'dude']:
                 if key in auc_train and len(auc_train[key]) > 0:
                     auc_l += f' {key} {auc_train[key][-1]:6.4f}'
                 if key in auc_valid and len(auc_valid[key]) > 0:
@@ -831,7 +756,7 @@ def main():
     if 'MASTER_ADDR' not in os.environ:
         os.environ['MASTER_ADDR'] = 'localhost'
     if 'MASTER_PORT' not in os.environ:
-        os.environ['MASTER_PORT'] = '12346'
+        os.environ['MASTER_PORT'] = '12347'
 
     # Access ddp from config.training
     if config.training.ddp:

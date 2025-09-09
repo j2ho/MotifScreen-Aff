@@ -145,6 +145,7 @@ class InferenceDataSet(torch.utils.data.Dataset):
         """Load ligands from MOL2 file"""
         try:
             # Read all ligands from MOL2 file
+            #print("? infer", self.config.processing.drop_H)
             mol_data = myutils.read_mol2_batch(self.ligands_file, drop_H=self.config.processing.drop_H)
             
             if mol_data is None:
@@ -230,20 +231,27 @@ class InferenceDataSet(torch.utils.data.Dataset):
         # Calculate origin from grid center (same for all batches)
         grids = self.grid_data['grids']
         origin = torch.tensor(np.mean(grids, axis=0)).float()
-        
+
+        '''
         # Center ligand graphs around origin
         for graph in ligand_graphs:
             if graph.ndata['x'].dim() == 3:  # (N, 1, 3)
                 graph.ndata['x'] = graph.ndata['x'] - origin.view(1, 1, 3)
             else:  # (N, 3)
                 graph.ndata['x'] = graph.ndata['x'] - origin.view(1, 3)
+        '''
+        # Center ligand graphs around COM of itself
+        for graph in ligand_graphs:
+            com = torch.mean(graph.ndata['x'], axis=0).float()
+            graph.ndata['x'] = (graph.ndata['x'] - com).float()
         
+        # processed already
         # Center grids around origin
-        grids_centered = grids - origin.numpy()
+        #grids_centered = grids - origin.numpy()
         
         # Build receptor graph (same for all batches, but we rebuild each time for consistency)
         receptor_graph, processed_grids, grid_indices = self.graph_builder.build_receptor_graph(
-            self.prop_npz, grids_centered, origin, gridchain=None
+            self.prop_npz, grids, origin, gridchain=None
         )
         
         if receptor_graph is None:
@@ -283,7 +291,7 @@ class InferenceDataSet(torch.utils.data.Dataset):
                 elif len(key_xyz) < 4:
                     padding = torch.zeros((4 - len(key_xyz), 3))
                     key_xyz = torch.cat([key_xyz, padding], dim=0)
-        
+
         return (
             receptor_graph,           # Receptor graph
             ligand_graphs,           # List of ligand graphs

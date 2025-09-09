@@ -27,6 +27,7 @@ import torch
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
+from os.path import join, isdir
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -36,8 +37,164 @@ from src.io.ligand_processer import launch_batched_ligand
 from src.data.dataset_inference import InferenceDataSet, collate
 from src.model.models.msk1 import EndtoEndModel as MSK_1
 from src.model.models.msk_v2 import EndtoEndModel as MSK_2
-from configs.config_loader import load_config_with_base, Config
+from configs.config_loader import load_config, load_config_with_base, Config
+from scripts.train.utils import count_parameters
 
+LOAD_TYPE='TRAIN'
+
+def load_data(txt_file, main_config: Config): # Type hint for config is now your main Config
+    from src.data.dataset import TrainingDataSet, collate # Removed TrainingConfig, DataPaths, etc.
+    """Load dataset using grouped configuration"""
+    from torch.utils import data
+
+    # Parse training data file
+    targets = []
+    ligands = []
+    weights = {}
+
+    print(f"Loading training data from: {txt_file}")
+    with open(txt_file, 'r') as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+
+            parts = line.strip().split()
+
+            target = parts[0]
+            active_ligand = parts[1]
+            mol2_file_type = parts[2]
+            # Optional weight
+            if len(parts) > 3:
+                weights[target.split('/')[-1]] = float(parts[3])
+            else:
+                weights[target.split('/')[-1]] = 1.0
+
+            targets.append(target)
+            ligands.append((active_ligand, mol2_file_type))
+
+    print(f"Loaded {len(targets)} samples from {txt_file}")
+
+    # Pass the main config object directly
+    dataset = TrainingDataSet(
+        targets=targets, # 'targets' and 'ligands' need to be defined outside this snippet's scope
+        ligands=ligands, # Same for 'ligands'
+        config=main_config # Pass the entire main config object
+    )
+
+    # Dataloader parameters now come from main_config.dataloader
+    '''
+    dataloader_params = {
+        'shuffle': main_config.dataloader.shuffle,
+        'num_workers': main_config.dataloader.num_workers,
+        'pin_memory': main_config.dataloader.pin_memory,
+        'collate_fn': collate,
+        'batch_size': main_config.dataloader.batch_size
+    }
+
+    # DDP logic uses main_config.training.ddp
+    #dataloader = data.DataLoader(dataset, **dataloader_params)
+    '''
+
+    return dataset 
+
+def load_params(rank, config: Config): # Type hint for config is now your main Config
+    """Load model, optimizer, and training state"""
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+
+    if config.version == "v1.0":
+        if not config.training.silent:
+            print("Loading MSK_1 model")
+        model = MSK_1(config)
+    elif config.version == "v2.0":
+        if not config.training.silent:
+            print("Loading MSK_2 model")
+        model = MSK_2(config)
+    model.to(device)
+
+    train_loss_empty = {
+        "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
+        "Screen": [], "ScreenC": [], "ScreenR": []
+        }
+    valid_loss_empty = {
+        "total": [], "CatP": [], "CatN": [], "CatCont": [], "NormPenalty": [],
+        "Str": [], "StrMAE": [], "StrPair": [], "KeyatmAttmap": [],
+        "Screen": [], "ScreenC": [], "ScreenR": []
+        }
+    epoch = 0
+
+    # Access learning rate via config.training.lr
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.lr)
+
+    # Checkpoint path uses config.modelname and config.version
+    checkpoint_path = join("models", f"{config.modelname}{config.version}", "model.pkl")
+    # Access load_checkpoint via config.training.load_checkpoint
+    if os.path.exists(checkpoint_path) and config.training.load_checkpoint:
+        if not config.training.silent:
+            print("Loading a checkpoint")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        trained_dict = {}
+        model_dict = model.state_dict()
+        model_keys = list(model_dict.keys())
+
+        for key, value in checkpoint["model_state_dict"].items():
+            #print("loading", key, value.shape)
+            
+            if key in model_keys:
+                wts = checkpoint["model_state_dict"][key]
+                if wts.shape == model_dict[key].shape:
+                    trained_dict[key] = wts
+                else:
+                    print("skip", key)
+
+        nnew, nexist = 0, 0
+        for key in model_keys:
+            if key not in trained_dict:
+                nnew += 1
+                print("new", key)
+            else:
+                nexist += 1
+
+        model.load_state_dict(trained_dict, strict=False)
+
+        epoch = checkpoint["epoch"] + 1
+        train_loss = checkpoint["train_loss"]
+        valid_loss = checkpoint["valid_loss"]
+
+        for key in train_loss_empty:
+            if key not in train_loss:
+                train_loss[key] = []
+        for key in valid_loss_empty:
+            if key not in valid_loss:
+                valid_loss[key] = []
+
+        if not config.training.silent:
+            print("Restarting at epoch", epoch)
+
+    else:
+        if not config.training.silent:
+            print("Training a new model")
+        train_loss = train_loss_empty
+        valid_loss = valid_loss_empty
+
+        model_dir = join("models", f"{config.modelname}{config.version}")
+        if not isdir(model_dir):
+            if not config.training.silent:
+                print("Creating a new dir at", model_dir)
+            os.makedirs(model_dir, exist_ok=True)
+
+    if epoch == 0:
+        for i, (name, layer) in enumerate(model.named_modules()):
+            if isinstance(layer, torch.nn.Linear) and \
+               ("class" in name or 'Xform' in name):
+                layer.weight.data *= 0.1
+
+    if rank == 0:
+        print("Nparams:", count_parameters(model))
+        print("Loaded")
+
+    return model, optimizer, epoch, train_loss, valid_loss
 
 class MotifScreenInference:
     """Complete inference pipeline for MotifScreen-Aff"""
@@ -82,7 +239,7 @@ class MotifScreenInference:
             print(f"Model config '{config_name}' not found. Using default config.")
             return Config()
             
-    def process_protein_and_grid(self) -> tuple[str, str]:
+    def process_protein_and_grid(self):# -> tuple[str, str]:
         """Process protein PDB and generate grid using enhanced runner"""
         print("="*60)
         print("Step 1: Processing protein and generating grid...")
@@ -106,7 +263,7 @@ class MotifScreenInference:
             runner_config['crystal_ligand'] = self.inference_config['crystal_ligand']
         
         try:
-            output_prefix = protein_runner(runner_config)
+            output_prefix = protein_runner(runner_config, skip_if_exist=True)
             prop_file = f"{output_prefix}.prop.npz"
             grid_file = f"{output_prefix}.grid.npz"
             
@@ -150,7 +307,7 @@ class MotifScreenInference:
             print(f"✗ Error during ligand processing: {e}")
             raise
             
-    def load_model(self):
+    def load_model(self,mode='VALID'):
         """Load the trained model from checkpoint"""
         print("="*60)
         print("Step 3: Loading trained model...")
@@ -162,33 +319,62 @@ class MotifScreenInference:
             
         print(f"Loading model from: {model_path}")
         print(f"Model version: {self.model_config.version}")
-        
-        # Initialize model
-        if self.model_config.version == "v1.0":
-            self.model = MSK_1(self.model_config)
-        elif self.model_config.version == "v2.0":
-            self.model = MSK_2(self.model_config)
+
+        if mode == 'TRAIN':
+            #train_config = load_config('configs/debug.yaml')
+            self.model = load_params(0, self.model_config)[0]
         else:
-            raise ValueError(f"Unsupported model version: {self.model_config.version}")
+            # Initialize model
+            #if self.model_config.version == "v1.0":
+            self.model = MSK_1(self.model_config)
+            #elif self.model_config.version == "v2.0":
+            #    self.model = MSK_2(self.model_config)
+            #else:
+            #    raise ValueError(f"Unsupported model version: {self.model_config.version}")
             
-        # Load checkpoint
-        checkpoint = torch.load(model_path, map_location=self.device)
+            # Load checkpoint
+            checkpoint_path = join("models", f"{self.model_config.modelname}{self.model_config.version}", "model.pkl")
+            checkpoint = torch.load(model_path, map_location=self.device)
+            print(model_path, checkpoint_path)
+
+            trained_dict = {}
+            model_dict = self.model.state_dict()
+            model_keys = list(model_dict.keys())
+
+            for key, value in checkpoint["model_state_dict"].items():
+                if key in model_keys:
+                    wts = checkpoint["model_state_dict"][key]
+                    if wts.shape == model_dict[key].shape:
+                        trained_dict[key] = wts
+                    else:
+                        print("skip", key)
+
+            self.model.load_state_dict(trained_dict, strict=True)
+
+            '''
+            checkpoint = torch.load(model_path, map_location=self.device)
+            
+            # Handle potential module prefix from DDP training
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+            
+            #for key, value in state_dict.items():
+            #print("loading", key, value.shape)
+            
+            if any(key.startswith("module.") for key in state_dict.keys()):
+                new_state_dict = {}
+                for key, value in state_dict.items():
+                    new_key = key.replace("module.", "")
+                    new_state_dict[new_key] = value
+                state_dict = new_state_dict
+                
+            # Load state dict
+            self.model.load_state_dict(state_dict, strict=True)
+            '''
         
-        # Handle potential module prefix from DDP training
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        if any(key.startswith("module.") for key in state_dict.keys()):
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                new_key = key.replace("module.", "")
-                new_state_dict[new_key] = value
-            state_dict = new_state_dict
-            
-        # Load state dict
-        self.model.load_state_dict(state_dict, strict=False)
         self.model.to(self.device)
         self.model.eval()
         
-        print("✓ Model loaded successfully")
+        print("✓ Model loaded successfully, Nparams: ", count_parameters(self.model))
         
     def create_dataset(self, prop_file: str, grid_file: str, keyatom_file: str) -> InferenceDataSet:
         """Create inference dataset"""
@@ -212,7 +398,8 @@ class MotifScreenInference:
         print(f"✓ Dataset created with {dataset.total_ligands} ligands in {dataset.num_batches} batches")
         return dataset
         
-    def run_inference(self, dataset: InferenceDataSet) -> Dict:
+    #def run_inference(self, dataset: InferenceDataSet) -> Dict:
+    def run_inference(self, dataset) -> Dict:
         """Run model inference on the dataset"""
         print("="*60)
         print("Step 5: Running model inference...")
@@ -224,7 +411,7 @@ class MotifScreenInference:
         # Create dataloader
         from torch.utils.data import DataLoader
         dataloader = DataLoader(dataset, batch_size=1, shuffle=False, 
-                              collate_fn=collate, num_workers=0)
+                                collate_fn=collate, num_workers=0)
         
         results = {
             'ligands': [],
@@ -235,7 +422,7 @@ class MotifScreenInference:
                 'version': self.model_config.version,
                 'model_path': self.inference_config['model_path'],
                 'total_batches': len(dataloader),
-                'batch_size': dataset.batch_size
+                'batch_size': 1 #dataset.batch_size
             }
         }
         
@@ -278,6 +465,9 @@ class MotifScreenInference:
                         results['binding_scores'].extend(binding_scores.tolist())
                         print(f"✓ Binding predictions: {len(binding_scores)} ligands")
                         
+                        # Collect ligand information only if bind_pred is not empty
+                        results['ligands'].extend(batch_ligands)
+                        
                     # Process motif predictions (only save from first batch to avoid huge files)
                     if motif_pred is not None and batch_idx == 0:
                         motif_scores = torch.sigmoid(motif_pred).cpu().numpy()
@@ -290,8 +480,6 @@ class MotifScreenInference:
                         results['predicted_coordinates'] = pred_coords.tolist()
                         print(f"✓ Coordinate predictions saved: {pred_coords.shape}")
                         
-                    # Collect ligand information
-                    results['ligands'].extend(batch_ligands)
                     
                     print(f"✓ Processed batch {batch_idx} successfully")
                     
@@ -372,22 +560,46 @@ class MotifScreenInference:
         print("="*60)
         
         try:
+            from torch.utils.data import DataLoader
             # Step 1 & 2: Process protein and ligands
             prop_file, grid_file = self.process_protein_and_grid()
             keyatom_file = self.process_ligands()
             
             # Step 3: Load model
             self.load_model()
+            #self.load_model(mode=LOAD_TYPE)
             
             # Step 4: Create dataset
-            dataset = self.create_dataset(prop_file, grid_file, keyatom_file)
+            # from inference
+            dataset_infer = self.create_dataset(prop_file, grid_file, keyatom_file)
             
             # Step 5: Run inference
-            results = self.run_inference(dataset)
+            results = self.run_inference(dataset_infer)
+            #print(results)
+
+            # from debuging -- training data
+            '''
+            train_config = load_config('configs/debug.yaml')
+            print("loading dataset_train")
+            dataset_train = load_data('data/debug.txt', train_config)
+            dataloader = DataLoader(dataset_train, batch_size=1, shuffle=False, 
+                                    collate_fn=collate, num_workers=0)
+            
+            results = self.run_inference(dataset_train)
+            
+            for inputs in dataloader: Glig_train = inputs[1]
+            
+            #for inputs in dataloader: Glig_infer = inputs[1]
+            #diff = Glig_train.ndata['attr']-Glig_infer.ndata['attr']
+            #print(diff.shape)
+            #print(diff)
+            #print((Glig_train.edata['attr']-Glig_infer.edata['attr']).sum())
+            #print((Glig_train.edata['rel_pos']-Glig_infer.edata['rel_pos']).sum())
+            '''
             
             # Step 6: Save results
             self.save_results(results)
-            
+
             print("="*60)
             print("✓ Inference pipeline completed successfully!")
             print("="*60)

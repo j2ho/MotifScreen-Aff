@@ -21,6 +21,7 @@ class GraphParamsConfig:
     maxedge: int = 100000
     maxnode: int = 3000
     ball_radius: float = 8.0
+    ball_radius_var: float = 0.0 #unuse by default
     firstshell_as_grid: bool = False
 
 @dataclass
@@ -91,6 +92,7 @@ class TRParams:
 @dataclass
 class AffModuleParams:
     classification_mode: str = "former_contrast"
+    dropoutmode: str = 'none'
 
 @dataclass
 class SchedulerConfig:
@@ -136,6 +138,7 @@ class DataLoaderParamsConfig: # Consolidated dataloader-related params
 class LossWeightsConfig: # Consolidated loss weights
     w_cat: float = 0.05
     w_str: float = 0.2
+    w_motif_penalty: float = 1.0e-10
     w_penalty: float = 1.0e-10
     w_contrast: float = 2.0
     w_spread: float = 5.0
@@ -238,6 +241,7 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             maxedge=config_dict.get('data', {}).get('maxedge', 100000),
             maxnode=config_dict.get('data', {}).get('maxnode', 3000),
             ball_radius=config_dict.get('data', {}).get('ball_radius', 8.0),
+            ball_radius_var=config_dict.get('data', {}).get('ball_radius_var', 0.0),
             firstshell_as_grid=config_dict.get('misc', {}).get('firstshell_as_grid', False) # Moved from data
         ),
         processing=DataProcessingConfig(
@@ -293,6 +297,7 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
         losses=LossWeightsConfig(
             w_cat=config_dict.get('losses', {}).get('w_cat', 0.05),
             w_str=config_dict.get('losses', {}).get('w_str', 0.2),
+            w_motif_penalty=config_dict.get('losses', {}).get('w_motif_penalty', 1.0e-10),
             w_penalty=config_dict.get('losses', {}).get('w_penalty', 1.0e-10),
             w_contrast=config_dict.get('losses', {}).get('w_contrast', 2.0),
             w_spread=config_dict.get('losses', {}).get('w_spread', 5.0),

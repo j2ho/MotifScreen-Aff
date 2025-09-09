@@ -1,0 +1,115 @@
+model:
+  name: "msk_opt"
+  version: "v1.0"
+  
+  common:
+    dropout_rate: 0.2  
+
+  # Grid network parameters 
+  grid:
+    model: "se3" # 'se3', 'egnn', 'egnn_attention', 'egnn_coords'
+    num_layers_grid: 5 # 5 for 'se3'
+    l0_in_features: 102  
+    n_heads: 4
+    num_channels: 32
+    num_edge_features: 3
+    l0_out_features: 64
+    ntypes: 6
+    
+  # Ligand network parameters 
+  ligand:
+    model: "gat"  # Model type for ligand processing
+    num_layers: 4
+    l0_in_features: 18
+    l0_out_features: 64
+    n_heads: 4
+    num_channels: 32
+    num_edge_features: 5
+    n_lig_global_in: 19
+    n_lig_global_out: 4
+    
+  # trigonal related, but output dims can affect other modules (e.g., ClassModule)
+  TR:
+    d: 64 
+    # m: 64 (removed - now uses featurizer output dimensions)
+    c: 64
+    n_trigon_lig_layers: 2
+    n_trigon_key_layers: 3
+    shared_trigon: false
+    normalize_Xform: true
+    lig_to_key_attn: true
+    trigon_module: 'trigon' # 'optimized'
+
+  aff:
+    classification_mode: "former_contrast"
+    dropoutmode: "harsh"
+    
+# Training parameters
+training:
+  load_checkpoint: true
+  lr: 1.0e-4
+  max_epoch: 500
+  accumulation_steps: 1
+  debug: false
+  ddp: true
+  silent: false
+  amp: false
+  wandb_mode: "online"  # Options: "online", "disabled", "offline"
+# Data parameters
+data:
+  datapath: "/ml/motifnet/refactored/v2/"
+  train_file: "data/msk_train.w3.txt"
+  valid_file: "data/msk_valid.txt"
+  affinityf: "data/affinity.npz"
+  decoyf: "decoys.BL2.npz"
+  crossreceptorf: "crossreceptor.filtered.npz" 
+  keyatomf: "keyatom.def.npz" 
+  ball_radius: 8.0
+  ball_radius_var: 1.0
+  edgedist: [2.2, 4.5]
+  edgemode: "topk"
+  edgek: [8, 16]
+  randomize: 0.2
+  ntype: 6
+  maxedge: 35000
+  maxnode: 3000
+  drop_H: true
+  max_subset: 5
+  
+# Data loader parameters
+dataloader:
+  batch_size: 1
+  num_workers: 5
+  pin_memory: true
+  shuffle: true
+  
+# Loss weights
+losses:
+  w_cat: 0.05
+  w_str: 0.2
+  w_motif_penalty: 1.0e-10
+  w_penalty: 1.0e-5
+  w_contrast: 2.0
+  w_spread: 5.0
+  w_screen: 0.5
+  w_screen_contrast: 0.5
+  w_screen_ranking: 5.0
+  w_Dkey: 1.0
+  screenloss: "BCE"
+  struct_loss: "mse"
+  
+  
+# Cross-validation and data augmentation
+cross_validation:
+  load_cross: true
+  cross_eval_struct: true
+  cross_grid: 1.0
+  nonnative_struct_weight: 0.2
+  motif_otf: true
+  
+# Other data settings
+misc:
+  pert: true
+  randomize_grid: 0.5
+  firstshell_as_grid: false
+  use_input_PHcore: false

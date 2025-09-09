@@ -85,7 +85,9 @@ class EndtoEndModel(nn.Module):
         ## Prediction Heads
         self.class_module = ClassModule( self.c, self.c,
                                          args.model_params_aff.classification_mode,
-                                         args.model_params_ligand.n_lig_global_out)
+                                         args.model_params_ligand.n_lig_global_out,
+                                         dropout_rate=self.dropout_rate,
+                                         dropoutmode=args.model_params_aff.dropoutmode )
 
 
     def forward(self, Grec, Glig, keyidx, grididx, u=None,
@@ -111,9 +113,9 @@ class EndtoEndModel(nn.Module):
         # 2) ligand embedding
         try:
             h_lig = self.LigandFeaturizer(Glig, drop_out=drop_out)
-            # print(f"DEBUG: LigandFeaturizer output - h_lig shape: {h_lig.shape if h_lig is not None else 'None'}")
+            #print(f"DEBUG: LigandFeaturizer output - h_lig shape: {h_lig.shape if h_lig is not None else 'None'}")
         except Exception as e:
-            # print(f"DEBUG: LigandFeaturizer failed with error: {e}")
+            #print(f"DEBUG: LigandFeaturizer failed with error: {e}")
             return NullArgs
         
         h_lig_global = self.extract_ligand_embedding( Glig.gdata.to(Glig.device),
@@ -190,6 +192,7 @@ class EndtoEndModel(nn.Module):
 
         # 4) final prediction head
         aff = self.class_module(z, h_grid_batched, h_key_batched,
-                                 lig_rep=h_lig_global, w_mask=key_mask)
+                                 lig_rep=h_lig_global, w_mask=key_mask,
+                                drop_out=drop_out)
 
         return Ykey_s, D_key, z_norm, cs, aff, None
