@@ -122,10 +122,15 @@ class EndtoEndModel(nn.Module):
             self.XformGrids = nn.ModuleList([])
         
         ## Prediction Heads
+        # self.class_module = ClassModule( self.c, self.c,
+        #                                  args.model_params_aff.classification_mode,
+        #                                  args.model_params_ligand.n_lig_global_out)
+
         self.class_module = ClassModule( self.c, self.c,
                                          args.model_params_aff.classification_mode,
-                                         args.model_params_ligand.n_lig_global_out)
-
+                                         args.model_params_ligand.n_lig_global_out,
+                                         dropout_rate=self.dropout_rate,
+                                         dropoutmode=args.model_params_aff.dropoutmode )
 
     def forward(self, Grec, Glig, keyidx, grididx, u=None,
                 gradient_checkpoint=True, drop_out=False):
