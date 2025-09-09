@@ -497,6 +497,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         keyatoms_dict = self.loader.load_keyatoms(keyatomf)
 
         grid_data = self._load_grid_data(receptor_file_paths['gridinfo'])
+        print (target, grid_data)
         if grid_data is None:
             return self._get_null_result(pname)
         grids, cats, mask = grid_data

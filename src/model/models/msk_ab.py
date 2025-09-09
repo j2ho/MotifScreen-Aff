@@ -22,7 +22,6 @@ class EndtoEndModel(nn.Module):
         self.d = args.model_params_TR.d # distance channels(bins)
         self.dropout_rate = args.model_params_TR.dropout_rate
         
-        # Store ablation configuration
         self.ablation = args.ablation
 
         ## Grid/Ligand featurizer
