@@ -346,7 +346,6 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 pnames = info["pname"]
                 source = info['source'][0]
                 eval_struct = info['eval_struct'][0]
-                print (f"Rank {rank} processing {pnames[0]} from {source} | Struct Eval: {eval_struct}")
                 t1 = time.time()
                 keyxyz_pred, key_pairdist_pred, rec_key_z, motif_pred, bind_pred, absaff_pred = model(
                     Grec, Glig, keyidx, grididx,
@@ -385,7 +384,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 l_cat_neg = torch.tensor(0.0, device=device)
                 l_cat_contrast = torch.tensor(0.0, device=device)
                 motif_penalty = torch.tensor(0.0, device=device)
-                if cats is not None:
+                if cats is not None and eval_struct:
                     motif_pred = torch.sigmoid(motif_pred)
                     motif_preds = [motif_pred]
 

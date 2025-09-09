@@ -497,11 +497,11 @@ class TrainingDataSet(torch.utils.data.Dataset):
         keyatoms_dict = self.loader.load_keyatoms(keyatomf)
 
         grid_data = self._load_grid_data(receptor_file_paths['gridinfo'])
-        print (target, grid_data)
         if grid_data is None:
+            print (f"Grid data loading failed for {pname}")
             return self._get_null_result(pname)
         grids, cats, mask = grid_data
-
+        
         if self.config.augmentation.randomize_grid > 1e-3:
             grids = self._apply_grid_randomization(grids)
 
@@ -527,7 +527,6 @@ class TrainingDataSet(torch.utils.data.Dataset):
 
         info = self._build_info_dict(pname, target, origin, processed_grids,
                                    grid_indices, receptor_file_paths['gridinfo'], ligand_info)
-
         return (receptor_graph, ligand_graphs, cats, mask, key_xyz,
                key_indices, binding_labels, info)
 
@@ -564,7 +563,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             elif 'labels' in sample or 'label' in sample:
                 cats = sample.get('labels', sample.get('label'))
             else:
-                return None
+                cats = np.zeros((len(grids), self.config.processing.ntype)) 
                 
         except Exception as e:
             logger.error(f"Error loading grid data from {gridinfo_path}: {e}")
@@ -688,7 +687,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             active = [pname]
             decoys = self.decoys.get(pname, [])
         elif mol2_type == 'batch':
-            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
+            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{active_ligand}_b.mol2"
             if os.path.exists(mol2_file):
                 active_and_decoys = myutils.read_mol2_batch(mol2_file, tag_only=True)[-1]
                 active = [active_and_decoys[0]]
@@ -709,7 +708,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         source = target.split('/')[0]
         pname = target.split('/')[1]
         active_ligand = ligands[0]
-        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
+        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{active_ligand}_b.mol2"
         try:
             mol_data = self.loader.read_mol2_batch(mol2_file, ligands)
             if mol_data is None:

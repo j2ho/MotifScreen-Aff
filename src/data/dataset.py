@@ -554,7 +554,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             elif 'labels' in sample or 'label' in sample:
                 cats = sample.get('labels', sample.get('label'))
             else:
-                return None
+                cats = np.zeros((len(grids), self.config.processing.ntype))
                 
         except Exception as e:
             logger.error(f"Error loading grid data from {gridinfo_path}: {e}")

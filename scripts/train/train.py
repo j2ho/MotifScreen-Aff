@@ -301,7 +301,7 @@ def train_one_epoch(model, optimizer, loader, rank, epoch, is_train, config: Con
                 l_cat_neg = torch.tensor(0.0, device=device)
                 l_cat_contrast = torch.tensor(0.0, device=device)
                 motif_penalty = torch.tensor(0.0, device=device)
-                if cats is not None:
+                if cats is not None and eval_struct: # eval_struct is true for biolip and pdbbind only 
                     cats = to_cuda(cats, device)
                     masks = to_cuda(masks, device)
 
