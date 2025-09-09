@@ -1,6 +1,6 @@
 model:
-  name: "msk_opt"
-  version: "v1.0"
+  name: "nostr_msk"
+  version: "ablation"
 
   common:
     dropout_rate: 0.2
@@ -53,7 +53,7 @@ training:
   ddp: true
   silent: false
   amp: false
-  wandb_mode: "online"  # Options: "online", "disabled", "offline"
+  wandb_mode: "offline"  # Options: "online", "disabled", "offline"
   weight_decay: 1.0e-4  # L2 regularization via optimizer weight decay
   max_param_norm: 20.0  # Maximum parameter norm before warning
   custom_init: false  # Custom initialization flag, can be used to trigger specific init logic
@@ -76,8 +76,8 @@ training:
 # Data parameters
 data:
   datapath: "/home/j2ho/DB/for_msk/"
-  train_file: "data/msk_train.txt"
-  valid_file: "data/msk_valid.txt"
+  train_file: "data/msk_train_sub.txt"
+  valid_file: "data/msk_valid_sub.txt"
   affinityf: "data/affinity.npz"
   decoyf: "decoys.BL2.npz"
   crossreceptorf: "crossreceptor.filtered.npz"
@@ -113,6 +113,33 @@ losses:
   w_Dkey: 1.0
   screenloss: "BCE"
   struct_loss: "mse"
+
+# Ablation study configuration
+ablation:
+  # Module ablations
+  enable_structure_module: false      # Enable/disable StructModule
+  enable_keyatom_trimming: true      # Enable/disable trimming to key atoms
+  enable_lig_to_key_attn: true       # Enable/disable ligand-to-key attention
+  enable_trigon_lig: true            # Enable/disable initial trigon module on all ligand atoms
+  enable_trigon_key_layers: true     # Enable/disable trigon layers for key atoms
+  enable_xform_modules: true         # Enable/disable XformModule layers
+  enable_distance_transform: true    # Enable/disable DistanceModule
+  
+  # Loss function ablations (set weight to 0 to disable)
+  ablate_cat_loss: false            # Set w_cat to 0 if true
+  ablate_structure_loss: false      # Set w_str to 0 if true  
+  ablate_contrast_loss: false       # Set w_contrast to 0 if true
+  ablate_spread_loss: false         # Set w_spread to 0 if true
+  ablate_screen_loss: false         # Set w_screen to 0 if true
+  ablate_screen_contrast_loss: false # Set w_screen_contrast to 0 if true
+  ablate_screen_ranking_loss: false # Set w_screen_ranking to 0 if true
+  ablate_dkey_loss: false           # Set w_Dkey to 0 if true
+  
+  # Component-specific ablations
+  skip_grid_projection: false       # Skip linear projection for grid features
+  skip_key_projection: false        # Skip linear projection for key features
+  num_trigon_key_layers: null       # Override n_trigon_key_layers if set (null uses config value)
+  num_trigon_lig_layers: null       # Override n_trigon_lig_layers if set (null uses config value)
 
 
 # Cross-validation and data augmentation

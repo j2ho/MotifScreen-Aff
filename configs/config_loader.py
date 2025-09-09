@@ -150,6 +150,33 @@ class LossWeightsConfig: # Consolidated loss weights
     struct_loss: str = "mse"
 
 @dataclass
+class AblationConfig: # Ablation study configuration
+    # Module ablations
+    enable_structure_module: bool = True
+    enable_keyatom_trimming: bool = True
+    enable_lig_to_key_attn: bool = True
+    enable_trigon_lig: bool = True
+    enable_trigon_key_layers: bool = True
+    enable_xform_modules: bool = True
+    enable_distance_transform: bool = True
+    
+    # Loss function ablations (set weight to 0 to disable)
+    ablate_cat_loss: bool = False
+    ablate_structure_loss: bool = False
+    ablate_contrast_loss: bool = False
+    ablate_spread_loss: bool = False
+    ablate_screen_loss: bool = False
+    ablate_screen_contrast_loss: bool = False
+    ablate_screen_ranking_loss: bool = False
+    ablate_dkey_loss: bool = False
+    
+    # Component-specific ablations
+    skip_grid_projection: bool = False
+    skip_key_projection: bool = False
+    num_trigon_key_layers_override: Optional[int] = None
+    num_trigon_lig_layers_override: Optional[int] = None
+
+@dataclass
 class Config:
     modelname: str = "MSK"
     version: str = "v1.0"
@@ -172,6 +199,7 @@ class Config:
     training: TrainingParamsConfig = field(default_factory=TrainingParamsConfig)
     dataloader: DataLoaderParamsConfig = field(default_factory=DataLoaderParamsConfig)
     losses: LossWeightsConfig = field(default_factory=LossWeightsConfig)
+    ablation: AblationConfig = field(default_factory=AblationConfig)
 
 
     # Main model parameters ... now same for all models
@@ -192,6 +220,28 @@ class Config:
             self.dataloader.shuffle = False
         if self.training.debug:
             self.dataloader.num_workers = 1
+            
+        # Apply loss ablations
+        self._apply_loss_ablations()
+    
+    def _apply_loss_ablations(self):
+        """Apply loss function ablations by setting weights to 0"""
+        if self.ablation.ablate_cat_loss:
+            self.losses.w_cat = 0.0
+        if self.ablation.ablate_structure_loss:
+            self.losses.w_str = 0.0
+        if self.ablation.ablate_contrast_loss:
+            self.losses.w_contrast = 0.0
+        if self.ablation.ablate_spread_loss:
+            self.losses.w_spread = 0.0
+        if self.ablation.ablate_screen_loss:
+            self.losses.w_screen = 0.0
+        if self.ablation.ablate_screen_contrast_loss:
+            self.losses.w_screen_contrast = 0.0
+        if self.ablation.ablate_screen_ranking_loss:
+            self.losses.w_screen_ranking = 0.0
+        if self.ablation.ablate_dkey_loss:
+            self.losses.w_Dkey = 0.0
 
 def deep_merge(base_dict: Dict, override_dict: Dict) -> Dict:
     result = base_dict.copy()
@@ -307,6 +357,27 @@ def load_config(config_path: str, base_config_path: Optional[str] = None) -> Con
             w_Dkey=config_dict.get('losses', {}).get('w_Dkey', 1.0),
             screenloss=config_dict.get('losses', {}).get('screenloss', "BCE"),
             struct_loss=config_dict.get('losses', {}).get('struct_loss', "mse")
+        ),
+        ablation=AblationConfig(
+            enable_structure_module=config_dict.get('ablation', {}).get('enable_structure_module', True),
+            enable_keyatom_trimming=config_dict.get('ablation', {}).get('enable_keyatom_trimming', True),
+            enable_lig_to_key_attn=config_dict.get('ablation', {}).get('enable_lig_to_key_attn', True),
+            enable_trigon_lig=config_dict.get('ablation', {}).get('enable_trigon_lig', True),
+            enable_trigon_key_layers=config_dict.get('ablation', {}).get('enable_trigon_key_layers', True),
+            enable_xform_modules=config_dict.get('ablation', {}).get('enable_xform_modules', True),
+            enable_distance_transform=config_dict.get('ablation', {}).get('enable_distance_transform', True),
+            ablate_cat_loss=config_dict.get('ablation', {}).get('ablate_cat_loss', False),
+            ablate_structure_loss=config_dict.get('ablation', {}).get('ablate_structure_loss', False),
+            ablate_contrast_loss=config_dict.get('ablation', {}).get('ablate_contrast_loss', False),
+            ablate_spread_loss=config_dict.get('ablation', {}).get('ablate_spread_loss', False),
+            ablate_screen_loss=config_dict.get('ablation', {}).get('ablate_screen_loss', False),
+            ablate_screen_contrast_loss=config_dict.get('ablation', {}).get('ablate_screen_contrast_loss', False),
+            ablate_screen_ranking_loss=config_dict.get('ablation', {}).get('ablate_screen_ranking_loss', False),
+            ablate_dkey_loss=config_dict.get('ablation', {}).get('ablate_dkey_loss', False),
+            skip_grid_projection=config_dict.get('ablation', {}).get('skip_grid_projection', False),
+            skip_key_projection=config_dict.get('ablation', {}).get('skip_key_projection', False),
+            num_trigon_key_layers_override=config_dict.get('ablation', {}).get('num_trigon_key_layers'),
+            num_trigon_lig_layers_override=config_dict.get('ablation', {}).get('num_trigon_lig_layers')
         ),
 
         # Directly from root or training section

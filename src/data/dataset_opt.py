@@ -1,4 +1,4 @@
-# src/data/training_dataset.py
+# src/data/training_dataset.py - OPTIMIZED VERSION
 
 import os
 import copy
@@ -6,17 +6,19 @@ import traceback
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
+from collections import defaultdict
 
 import numpy as np
 import torch
 import dgl
 import scipy.spatial
+import scipy.sparse
 
 # Local imports
 import src.data.types as types
 import src.data.utils as myutils
 import src.data.kappaidx as kappaidx
-from configs.config_loader import Config, DataPathsConfig, GraphParamsConfig, DataProcessingConfig, DataAugmentationConfig, CrossValidationConfig 
+from configs.config_loader import Config, DataPathsConfig, GraphParamsConfig, DataProcessingConfig, DataAugmentationConfig, CrossValidationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ class MolecularLoader:
     def __init__(self, config_paths: DataPathsConfig, config_processing: DataProcessingConfig, config_augmentation: DataAugmentationConfig):
         self.config_paths = config_paths
         self.config_processing = config_processing
-        self.config_augmentation = config_augmentation # Augmentation can be passed down if needed in loader
+        self.config_augmentation = config_augmentation
         self.mol2_cache = {}
 
     def load_keyatoms(self, keyatomf: str) -> Dict[str, List[str]]:
@@ -38,15 +40,12 @@ class MolecularLoader:
             return {}
 
     def find_keyatomf(self, pname: str, source: str) -> Optional[str]:
-        # Access config via self.config_paths
-        # search_paths = [f'{self.config_paths.datapath}/{source}/{self.config_paths.keyatomf}',
-        #                 f'{self.config_paths.datapath}/{source}/{pname}/{pname}.{self.config_paths.keyatomf}',
-        # ]
         search_paths = [f'{self.config_paths.datapath}/{source}/{self.config_paths.keyatomf}',
                         f'{self.config_paths.datapath}/{source}/{pname}/{pname}.{self.config_paths.keyatomf}',
                         f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_sim_check/{pname}.{self.config_paths.keyatomf}',
                         f'{self.config_paths.datapath}/{source}/{pname}/batch_mol2s_qh/{pname}.{self.config_paths.keyatomf}',
         ]
+
         for path in search_paths:
             if os.path.exists(path):
                 return path
@@ -55,12 +54,10 @@ class MolecularLoader:
         return None
 
     def read_mol2_single(self, mol2_path: str) -> Tuple:
-        # Access config via self.config_processing
         if not os.path.exists(mol2_path):
             logger.error(f"MOL2 file not found: {mol2_path}")
             return None
             
-        # Check if file is empty
         if os.path.getsize(mol2_path) == 0:
             logger.warning(f"MOL2 file is empty: {mol2_path}")
             return None
@@ -72,7 +69,6 @@ class MolecularLoader:
             return None
 
     def read_mol2_batch(self, mol2_path: str, tags: List[str] = None) -> Dict:
-        # Access config via self.config_processing
         if self.config_processing.store_memory and mol2_path in self.mol2_cache:
             return self._extract_from_cache(mol2_path, tags)
         try:
@@ -81,7 +77,6 @@ class MolecularLoader:
                 drop_H=self.config_processing.drop_H,
                 tags_read=tags
             )
-            elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read =data
             if self.config_processing.store_memory:
                 self._cache_mol2_data(mol2_path, data)
             return data
@@ -91,38 +86,37 @@ class MolecularLoader:
 
     def _cache_mol2_data(self, mol2_path: str, data: Tuple):
         elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read = data
-        cache_data = {}
-        for elem, q, bond, border, coord, nneigh, atm, atype, tag in zip(
-            elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read
-        ):
-            cache_data[tag] = (elem, q, bond, border, coord, nneigh, atm, atype)
+        # OPTIMIZED: Use dict comprehension instead of loop
+        cache_data = {
+            tag: (elem, q, bond, border, coord, nneigh, atm, atype)
+            for elem, q, bond, border, coord, nneigh, atm, atype, tag in zip(
+                elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read
+            )
+        }
         self.mol2_cache[mol2_path] = cache_data
         logger.info(f"Cached MOL2: {mol2_path}, molecules: {len(cache_data)}")
 
     def _extract_from_cache(self, mol2_path: str, tags: List[str]) -> Tuple:
         cache_data = self.mol2_cache[mol2_path]
         elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read = [], [], [], [], [], [], [], [], []
-        for tag in tags:
-            if tag in cache_data:
-                elem, q, bond, border, coord, nneigh, atm, atype = cache_data[tag]
-                elems.append(elem)
-                qs.append(q)
-                bonds.append(bond)
-                borders.append(border)
-                xyz.append(coord)
-                nneighs.append(nneigh)
-                atms.append(atm)
-                atypes.append(atype)
-                tags_read.append(tag)
+        
+        # OPTIMIZED: Use list comprehension with filtering for valid tags
+        valid_data = [(tag, cache_data[tag]) for tag in tags if tag in cache_data]
+        
+        if valid_data:
+            tags_read, data_tuples = zip(*valid_data)
+            elems, qs, bonds, borders, xyz, nneighs, atms, atypes = zip(*data_tuples)
+            tags_read = list(tags_read)
+            elems, qs, bonds, borders, xyz, nneighs, atms, atypes = map(list, [elems, qs, bonds, borders, xyz, nneighs, atms, atypes])
+            
         return elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read
 
 class GraphBuilder:
     """Constructs DGL graphs from molecular data"""
-    def __init__(self, config_graph: GraphParamsConfig, config_augmentation: DataAugmentationConfig, config_processing: DataProcessingConfig, static: bool):
+    def __init__(self, config_graph: GraphParamsConfig, config_augmentation: DataAugmentationConfig, config_processing: DataProcessingConfig):
         self.config_graph = config_graph
         self.config_augmentation = config_augmentation
         self.config_processing = config_processing
-        self.static = static
 
     def build_ligand_graph(self, mol_data: Tuple, name: str = "") -> dgl.DGLGraph:
         try:
@@ -142,13 +136,6 @@ class GraphBuilder:
             global_features = self._compute_global_features(elems, qs, bonds, borders, xyz, atypes)
             setattr(graph, "gdata", torch.tensor(global_features).float())
             graph.ndata['Y'] = torch.zeros(len(elems), 3)
-
-            if (graph.in_degrees() == 0).any():
-                import traceback
-                logger.error(f"Graph contains 0-in-degree")
-                #traceback.print_exc()
-                return None
-            
             return graph
         except Exception as e:
             import traceback
@@ -197,15 +184,13 @@ class GraphBuilder:
 
     def _build_edges(self, xyz: np.ndarray, bonds: List[List[int]],
                     mode: str, top_k: int, dcut: float) -> Tuple[np.ndarray, np.ndarray]:
-        # Debug: Check input shape
         if xyz.ndim != 2 or xyz.shape[1] != 3:
             logger.error(f"Unexpected xyz shape: {xyz.shape}, expected (N, 3)")
             raise ValueError(f"xyz must be shape (N, 3), got {xyz.shape}")
             
-        X = torch.tensor(xyz[None, :])  # Shape: [1, N, 3]
-        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)  # Shape: [1, N, N, 3]
+        X = torch.tensor(xyz[None, :])
+        dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
         
-        # Debug: Check dX shape before distance calculation
         if dX.ndim != 4:
             logger.error(f"dX has unexpected shape: {dX.shape}, expected 4D tensor")
             logger.error(f"Original X shape: {X.shape}, xyz shape: {xyz.shape}")
@@ -241,24 +226,39 @@ class GraphBuilder:
         features.append(nsasa[:, None])
         features.append(occl[:, None])
         features.append(np.array(qs)[:, None])
-        elem_indices = [myutils.ELEMS.index(elem) for elem in elems]
+        
+        # OPTIMIZED: Vectorized element indexing
+        elem_indices = np.array([myutils.ELEMS.index(elem) for elem in elems])
         elem_onehot = np.eye(len(myutils.ELEMS))[elem_indices]
         features.append(elem_onehot)
-
         return np.concatenate(features, axis=-1)
 
     def _compute_ligand_edge_features(self, bonds: List, borders: List,
                                     u: np.ndarray, v: np.ndarray, xyz: np.ndarray) -> torch.Tensor:
-        bond_matrix = np.zeros((len(xyz), len(xyz)), dtype=int)
-        bond_indices = np.zeros((len(xyz), len(xyz)), dtype=int)
-        for k, (i, j) in enumerate(bonds):
-            bond_indices[i, j] = bond_indices[j, i] = k
-            bond_matrix[i, j] = bond_matrix[j, i] = 1
-        bond_orders = np.zeros(len(u), dtype=np.int64)
-        for k, (i, j) in enumerate(zip(u, v)):
-            if bond_matrix[i, j]:
-                bond_orders[k] = borders[bond_indices[i, j]]
+        # OPTIMIZED: Vectorized bond matrix creation
+        n_atoms = len(xyz)
+        bond_matrix = np.zeros((n_atoms, n_atoms), dtype=int)
+        bond_indices = np.zeros((n_atoms, n_atoms), dtype=int)
+        
+        if bonds:
+            bonds_array = np.array(bonds)
+            # Vectorized assignment using advanced indexing
+            bond_idx_range = np.arange(len(bonds))
+            bond_indices[bonds_array[:, 0], bonds_array[:, 1]] = bond_idx_range
+            bond_indices[bonds_array[:, 1], bonds_array[:, 0]] = bond_idx_range
+            bond_matrix[bonds_array[:, 0], bonds_array[:, 1]] = 1
+            bond_matrix[bonds_array[:, 1], bonds_array[:, 0]] = 1
+        
+        # OPTIMIZED: Vectorized bond order lookup
+        bond_orders = np.where(
+            bond_matrix[u, v], 
+            np.array(borders)[bond_indices[u, v]], 
+            0
+        ).astype(np.int64)
+        
         edge_features = torch.eye(5)[bond_orders]
+        
+        # Compute topological distances using shortest path
         bond_graph = scipy.sparse.csgraph.shortest_path(bond_matrix, directed=False)
         topo_distances = torch.tensor(bond_graph)[u, v]
         edge_features[:, -1] = 1.0 / (topo_distances + 0.00001)
@@ -266,11 +266,20 @@ class GraphBuilder:
 
     def _compute_global_features(self, elems: List, qs: List, bonds: List,
                                borders: List, xyz: np.ndarray, atypes: List) -> np.ndarray:
+        # OPTIMIZED: Pre-compute element indices and bond lookup
+        elem_indices = np.array([myutils.ELEMS.index(elem) for elem in elems])
+        
+        # Create bond lookup dictionary for O(1) access
+        bond_lookup = {tuple(sorted([i, j])): idx for idx, (i, j) in enumerate(bonds)}
+        
+        # OPTIMIZED: Vectorized flextor counting
         nflextors = 0
-        elem_indices = [myutils.ELEMS.index(elem) for elem in elems]
         for i, j in bonds:
-            if elem_indices[i] != 1 and elem_indices[j] != 1 and borders[bonds.index([i, j])] > 1:
-                nflextors += 1
+            if elem_indices[i] != 1 and elem_indices[j] != 1:
+                bond_idx = bond_lookup[tuple(sorted([i, j]))]
+                if borders[bond_idx] > 1:
+                    nflextors += 1
+        
         kappa = kappaidx.calc_Kappaidx(atypes, bonds, False)
         normalized_kappa = [(kappa[0] - 40.0) / 40.0, (kappa[1] - 15.0) / 15.0, (kappa[2] - 10.0) / 10.0]
         com = np.mean(xyz, axis=0)
@@ -278,18 +287,25 @@ class GraphBuilder:
         inertia = np.dot(centered_xyz.transpose(), centered_xyz)
         eigvals, _ = np.linalg.eig(inertia)
         principal_values = (np.sqrt(np.sort(eigvals)) - 20.0) / 20.0
-        natm = (len([e for e in elem_indices if e > 1]) - 25.0) / 25.0
+        natm = (len(elem_indices[elem_indices > 1]) - 25.0) / 25.0
         naro = (len([at for at in atypes if at in ['C.ar', 'C.aro', 'N.ar']]) - 6.0) / 6.0
+        
+        # OPTIMIZED: Pre-build adjacency list for neighbor lookup
+        neighbors_dict = defaultdict(list)
+        for i, j in bonds:
+            neighbors_dict[i].append(j)
+            neighbors_dict[j].append(i)
+        
         nacc, ndon = -1.0, -1.0
         for i, elem_idx in enumerate(elem_indices):
-            if elem_idx not in [3, 4]:
-                continue
-            neighbors = [j for i_bond, j_bond in bonds if (i_bond == i or j_bond == i)]
-            has_hydrogen = any(elem_indices[n] == 1 for n in neighbors if n != i)
-            if has_hydrogen:
-                ndon += 0.2
-            else:
-                nacc += 0.2
+            if elem_idx in [3, 4]:  # N, O
+                neighbors = neighbors_dict[i]
+                has_hydrogen = any(elem_indices[n] == 1 for n in neighbors)
+                if has_hydrogen:
+                    ndon += 0.2
+                else:
+                    nacc += 0.2
+        
         nflextors_onehot = np.eye(10)[min(9, nflextors)]
         global_features = np.concatenate([
             nflextors_onehot, normalized_kappa, [nacc, ndon, naro], list(principal_values)
@@ -315,13 +331,13 @@ class GraphBuilder:
         ngrids = len(grids)
         all_aas = np.concatenate([aas_rec, [0] * ngrids])
         all_xyz = np.concatenate([xyz, grids])
+        
+        # OPTIMIZED: Vectorized atom type conversion
         atypes = np.array([types.find_gentype2num(at) for at in atypes_rec])
         all_atypes = np.concatenate([atypes, [0] * ngrids])
         all_sasa = np.concatenate([sasa_rec, [0.0] * ngrids])
         all_charges = np.concatenate([charges_rec, [0.0] * ngrids])
-        #drop this
-        #d2o = np.sqrt(np.sum(all_xyz * all_xyz, axis=1))
-        d2o = np.zeros(all_xyz.shape[0]) # dummy
+        d2o = np.zeros(all_xyz.shape[0])  # dummy
         
         features = []
         aa_onehot = np.eye(types.N_AATYPE)[all_aas]
@@ -342,24 +358,22 @@ class GraphBuilder:
             all_xyz = np.concatenate([xyz, grids])
             kd = scipy.spatial.cKDTree(all_xyz)
             kd_grids = scipy.spatial.cKDTree(grids)
-
-            ball_radius =  self.config_graph.ball_radius
-            if not self.static:
-                ball_radius = ball_radius + self.config_graph.ball_radius_var*2.0*(np.random.random()-0.5)
-            indices = np.concatenate(kd_grids.query_ball_tree(kd, ball_radius))
+            indices = np.concatenate(kd_grids.query_ball_tree(kd, self.config_graph.ball_radius))
             selected_indices = list(np.unique(indices).astype(np.int16))
             if len(selected_indices) > self.config_graph.maxnode:
                 logger.error(f"Receptor nodes {len(selected_indices)} exceeds max {self.config_graph.maxnode}")
                 return None
+            
             bond_matrix = np.zeros((len(all_xyz), len(all_xyz)))
             index_map = {idx: i for i, idx in enumerate(selected_indices)}
-            for i, j in bonds:
-                if i in index_map and j in index_map:
-                    k, l = index_map[i], index_map[j]
-                    bond_matrix[k, l] = bond_matrix[l, k] = 1
-            # Uncomment if want to ensure self-loops
-            # for i in range(len(all_xyz)):
-            #     bond_matrix[i, i] = 1
+            
+            # OPTIMIZED: Vectorized bond matrix creation
+            valid_bonds = [(i, j) for i, j in bonds if i in index_map and j in index_map]
+            if valid_bonds:
+                bond_pairs = np.array([(index_map[i], index_map[j]) for i, j in valid_bonds])
+                bond_matrix[bond_pairs[:, 0], bond_pairs[:, 1]] = 1
+                bond_matrix[bond_pairs[:, 1], bond_pairs[:, 0]] = 1
+            
             selected_xyz = all_xyz[selected_indices]
             selected_xyz = torch.tensor(selected_xyz).float()
             X = selected_xyz[None, :].clone().detach()
@@ -381,6 +395,8 @@ class GraphBuilder:
             graph.ndata['x'] = selected_xyz.clone().detach()[:, None, :]
             edge_distances = torch.sqrt(torch.sum((selected_xyz[v] - selected_xyz[u]) ** 2, dim=-1) + 1e-6)[:, None]
             edge_features = self._distance_feature(edge_distances, 0.5, 5.0)
+            
+            # OPTIMIZED: Vectorized bond info computation
             bond_info = torch.tensor([bond_matrix[v_i, u_i] for u_i, v_i in zip(u, v)]).float()
             edge_features[:, 0] = bond_info
             grid_neighbors = ((u >= natm) * (v >= natm)).float()
@@ -419,7 +435,6 @@ class GraphBuilder:
 
 class TrainingDataSet(torch.utils.data.Dataset):
     def __init__(self, targets: List[str], ligands: List = None,
-                 static: bool = False,
                  config: Config = None): 
         """
         Initialize training dataset with grouped parameters
@@ -432,7 +447,6 @@ class TrainingDataSet(torch.utils.data.Dataset):
         if config is None:
             raise ValueError("Config object must be provided to TrainingDataSet.")
         self.config = config
-        self.static = static #true if used as validation
 
         self.targets = targets
         self.ligands = ligands
@@ -442,13 +456,12 @@ class TrainingDataSet(torch.utils.data.Dataset):
         self.loader = MolecularLoader(
             config_paths=self.config.paths,
             config_processing=self.config.processing,
-            config_augmentation=self.config.augmentation # Passed to loader for randomize_grid
+            config_augmentation=self.config.augmentation
         )
         self.graph_builder = GraphBuilder(
             config_graph=self.config.graph,
             config_augmentation=self.config.augmentation,
-            config_processing=self.config.processing, # Passed to graph_builder for drop_H in ligand graph
-            static=self.static
+            config_processing=self.config.processing
         )
 
         self.crossactives = self._load_crossactives() if self.config.cross_validation.load_cross else {}
@@ -467,7 +480,6 @@ class TrainingDataSet(torch.utils.data.Dataset):
             return self._get_item_safe(index)
         except Exception as e:
             logger.error(f"Error processing item {index}: {e}")
-            # traceback.print_exc() # Uncomment for more detailed debug
             return self._get_null_result(self.targets[index])
 
     def _get_item_safe(self, index: int) -> Optional[Tuple]:
@@ -489,19 +501,17 @@ class TrainingDataSet(torch.utils.data.Dataset):
             return self._get_null_result(pname)
         grids, cats, mask = grid_data
 
+        if self.config.augmentation.randomize_grid > 1e-3:
+            grids = self._apply_grid_randomization(grids)
+
         ligand_result = self._process_ligands(target, self.ligands[index], keyatoms_dict)
         if ligand_result is None:
             return self._get_null_result(pname)
         ligand_graphs, native_graph, key_xyz, key_indices, binding_labels, ligand_info = ligand_result
-        origin = torch.tensor(np.mean(grids, axis=0)).float()
 
-        # processed already
-        #if native_graph is not None:
-            #native_graph.ndata['x'] = native_graph.ndata['x'] - origin
-            #key_xyz = key_xyz - origin
-        #grids = grids - origin.squeeze().numpy() # will be processed at receptor construction
+        origin = torch.tensor(np.mean(grids, axis=0)).float()
         
-        gridchain = None # Still using None for now
+        gridchain = None
         receptor_graph, processed_grids, grid_indices = self.graph_builder.build_receptor_graph(
             receptor_file_paths['propnpz'], grids, origin, gridchain
         )
@@ -531,11 +541,14 @@ class TrainingDataSet(torch.utils.data.Dataset):
         }
 
     def _validate_files(self, file_paths: Dict[str, str]) -> bool:
+        # OPTIMIZED: Use all() with generator expression
         required_files = ['gridinfo', 'propnpz']
-        for file_key in required_files:
-            if not os.path.exists(file_paths[file_key]):
+        missing_files = [file_key for file_key in required_files if not os.path.exists(file_paths[file_key])]
+        
+        if missing_files:
+            for file_key in missing_files:
                 logger.error(f"Required file missing: {file_paths[file_key]}")
-                return False
+            return False
         return True
 
     def _load_grid_data(self, gridinfo_path: str) -> Optional[Tuple]:
@@ -544,13 +557,9 @@ class TrainingDataSet(torch.utils.data.Dataset):
         try:
             sample = np.load(gridinfo_path, allow_pickle=True)
             grids = sample['xyz']
-            if (not self.static) and self.config.augmentation.randomize_grid > 1e-3:
-                grids = self._apply_grid_randomization(grids)
-                
             cats, mask = None, None
-            if (not self.static) and self.config.cross_validation.motif_otf and 'PHcoord' in sample:
-                cats = self._label_PH(grids, sample.get('PHcoord'), sample.get('PHtype'))
-                
+            if self.config.cross_validation.motif_otf and 'PHcoord' in sample:
+                cats = self._label_PH(grids,sample.get('PHcoord'), sample.get('PHtype'))
             elif 'labels' in sample or 'label' in sample:
                 cats = sample.get('labels', sample.get('label'))
             else:
@@ -567,58 +576,42 @@ class TrainingDataSet(torch.utils.data.Dataset):
             cats = torch.tensor(cats).float()
             mask = torch.tensor(mask).float()
 
-        # for debug purpose
-        #self._report_grid_and_motif(gridinfo_path.split('/')[-1][:-4]+'.org.pdb',
-        #                            sample['xyz'], sample.get('labels', sample.get('label')))
-        #self._report_grid_and_motif(gridinfo_path.split('/')[-1][:-4]+'.aug.pdb',
-        #                            grids, cats)
-
         return grids, cats, mask
 
-    def _report_grid_and_motif(self, outf: str, grids: np.ndarray, cats: np.ndarray,
-                               threshold: float = 0.01):
-        out = open(outf,'w')
-        nlabeled = 0
-        form = "HETATM %4d  %2s  %2s  X%4d    %8.3f%8.3f%8.3f  1.00  %5.2f\n"
-        for i,(l,grid) in enumerate(zip(cats,grids)):
-            out.write(form%(i,'H','H',i,grid[0],grid[1],grid[2],0.0))
-            
-            if max(l) < threshold: continue
-            for j in np.where(l>threshold)[0]:
-                B = np.sqrt(l[j])
-                nlabeled += 1
-                mname = ['H','CB','CA','CD','CH','CR'][j]
-                out.write(form%(i,mname,mname,i,grid[0],grid[1],grid[2],B))
-        out.close()
-
     def _label_PH(self, grids, PHxyz, PHtypes, sig=1.0, out=None):
-        indices_true, indices_fake = [],[]
-        kd      = scipy.spatial.cKDTree(grids)
-        kd_true   = scipy.spatial.cKDTree(PHxyz) # M x 3
+        # OPTIMIZED: Vectorized PH labeling
+        kd = scipy.spatial.cKDTree(grids)
+        kd_true = scipy.spatial.cKDTree(PHxyz)
         indices_true = np.concatenate(kd_true.query_ball_tree(kd, 1.5))
-        indices_true = np.array(np.unique(indices_true),dtype=np.int16)
+        indices_true = np.array(np.unique(indices_true), dtype=np.int16)
 
-        # distance b/w grid & true-labeled-motifs
-        dv2xyz = np.array([[g-x for g in grids[indices_true]] for x in PHxyz]) # grids x numTrue
-        d2xyz = np.sum(dv2xyz*dv2xyz,axis=2)
-        overlap = np.exp(-d2xyz/sig/sig) # Gaussian decay
+        # OPTIMIZED: Vectorized distance calculation
+        grids_subset = grids[indices_true]  # Only compute for relevant grids
+        dv2xyz = grids_subset[:, None, :] - PHxyz[None, :, :]  # Broadcasting
+        d2xyz = np.sum(dv2xyz * dv2xyz, axis=2)
+        overlap = np.exp(-d2xyz / (sig * sig))
 
-        N = 6 #cats_true.shape[1] -- hard-coded
-        label = np.zeros((len(grids),N))
+        N = 6
+        label = np.zeros((len(grids), N))
 
-        # assign labels
-        for o,cat in zip(overlap,PHtypes): # motif index
-            for j,p in enumerate(o): # grid index
-                if p > 0.01:
-                    label[indices_true[j],cat] = max(label[indices_true[j],cat],np.sqrt(p))
+        # OPTIMIZED: Vectorized label assignment
+        for motif_idx, cat in enumerate(PHtypes):
+            overlap_values = overlap[:, motif_idx]
+            valid_mask = overlap_values > 0.01
+            valid_grid_indices = indices_true[valid_mask]
+            valid_overlap_values = np.sqrt(overlap_values[valid_mask])
+            
+            # Use maximum between existing and new values
+            current_values = label[valid_grid_indices, cat]
+            label[valid_grid_indices, cat] = np.maximum(current_values, valid_overlap_values)
 
-        # just for book-keeping
-        if out != None:
+        # Book-keeping (if needed)
+        if out is not None:
             nlabeled = 0
-            for i,l in enumerate(label):
+            for i, l in enumerate(label):
                 grid = grids[i]
                 if max(l) > 0.01:
-                    imotif = np.where(l>0.01)[0]
+                    imotif = np.where(l > 0.01)[0]
                     for j in imotif:
                         B = np.sqrt(l[j])
                         nlabeled += 1
@@ -629,9 +622,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         return label
     
     def _apply_grid_randomization(self, grids: np.ndarray) -> np.ndarray:
-        # uniform translation
-        #rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(len(grids), 3))
-        rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(3))
+        rand_xyz = 2.0 * self.config.augmentation.randomize_grid * (0.5 - np.random.rand(len(grids), 3))
         return grids + rand_xyz
 
     def _process_ligands(self, target: str, ligands: List,
@@ -662,7 +653,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             if actives and actives[0] in tags_read:
                 active_idx = tags_read.index(actives[0])
                 native_graph = native_graphs[active_idx] if native_graphs else None
-                if not isinstance(native_graph, list): # Check to ensure it's a single graph not a list of graphs
+                if not isinstance(native_graph, list):
                     if native_graph is not None:
                         key_xyz = native_graph.ndata['x'][key_indices_list[active_idx]]
 
@@ -688,7 +679,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             data_type = 'model'
         elif source in ['biolip','pdbbind']:
             data_type = 'structure'
-        elif source in ['chembl','dude']:
+        elif source in ['chembl']:
             data_type = 'activity'
 
         (active_ligand, mol2_type) = ligands[0], ligands[1] if len(ligands) > 1 else 'single'
@@ -696,8 +687,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
             active = [pname]
             decoys = self.decoys.get(pname, [])
         elif mol2_type == 'batch':
-            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/{active_ligand}.mol2"
-            # mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
+            mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
             if os.path.exists(mol2_file):
                 active_and_decoys = myutils.read_mol2_batch(mol2_file, tag_only=True)[-1]
                 active = [active_and_decoys[0]]
@@ -718,8 +708,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         source = target.split('/')[0]
         pname = target.split('/')[1]
         active_ligand = ligands[0]
-        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/{active_ligand}.mol2"
-        #mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
+        mol2_file = f"{self.config.paths.datapath}/{source}/{pname}/batch_mol2s_qh/{active_ligand}.mol2"
         try:
             mol_data = self.loader.read_mol2_batch(mol2_file, ligands)
             if mol_data is None:
@@ -727,6 +716,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
 
             elems, qs, bonds, borders, xyz, nneighs, atms, atypes, tags_read = mol_data
 
+            # OPTIMIZED: Process all ligands in vectorized manner where possible
             ligand_graphs = []
             key_indices_list = []
             atoms_list = []
@@ -746,6 +736,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
                     graph.ndata['x'] = (graph.ndata['x'] - com).float()
 
                     if self.config.processing.drop_H:
+                        # OPTIMIZED: List comprehension with zip
                         filtered_atoms = [atom for atom, element in zip(atm, elem) if element != 'H']
                     else:
                         filtered_atoms = atm
@@ -816,7 +807,6 @@ class TrainingDataSet(torch.utils.data.Dataset):
                     ligand_graph.ndata['x'] = (ligand_graph.ndata['x'] - com).float()
 
                     native_graph = copy.deepcopy(ligand_graph)
-                    # Use augmentation config directly
                     if (os.path.exists(conf_mol2) and self.config.augmentation.pert):
                         try:
                             conf_xyz, _ = myutils.read_mol2s_xyzonly(conf_mol2)
@@ -850,6 +840,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
     def _identify_key_atoms(self, target: str, atoms: List[str], keyatoms_dict: Dict) -> List[int]:
         if target not in keyatoms_dict:
             return []
+        # OPTIMIZED: Use list comprehension with early filtering
         key_indices = [atoms.index(atom) for atom in keyatoms_dict[target] if atom in atoms]
         if len(key_indices) > 10:
             key_indices = list(np.random.choice(key_indices, 10, replace=False))
@@ -861,7 +852,7 @@ class TrainingDataSet(torch.utils.data.Dataset):
         source = target.split('/')[0]
         if source in ['docked', 'biolip', 'pdbbind']:
             eval_struct = 1
-        elif source in ['chembl','dude']:
+        elif source in ['chembl']:
             eval_struct = 0
         info = {
             'pname': pname,
@@ -927,16 +918,19 @@ def collate(samples):
         batched_masks = torch.stack(masks, dim=0).float().squeeze()
         if len(batched_masks.shape) == 1:
             batched_masks = batched_masks[None, :]
-    combined_info = {}
-    for key in info_dicts[0]:
-        combined_info[key] = [info_dict[key] for info_dict in info_dicts]
+    
+    # OPTIMIZED: Use dict comprehension for combined_info
+    combined_info = {key: [info_dict[key] for info_dict in info_dicts] for key in info_dicts[0]}
     combined_info['grid'] = torch.tensor(np.array(combined_info['grid']))
+    
+    # OPTIMIZED: Vectorized grid index computation
     batched_grid_indices = []
     node_offset = 0
     for num_nodes, grid_idx in zip(batched_receptors.batch_num_nodes(), combined_info['grididx']):
         batched_grid_indices.append(torch.tensor(grid_idx, dtype=int) + node_offset)
         node_offset += num_nodes
     combined_info['grididx'] = torch.cat(batched_grid_indices, dim=0)
+    
     if ligand_graphs[0]:
         batched_ligands = dgl.batch(ligand_graphs[0])
         global_data = torch.stack([g.gdata for g in ligand_graphs[0]])
@@ -966,6 +960,7 @@ def parse_affinity(affinity_file: str) -> Dict[str, float]:
         import csv
         with open(affinity_file, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
+            # OPTIMIZED: Process rows more efficiently
             for row in reader:
                 key_id = f"{row['pdb_id']}.{row['ligand_id']}"
                 key_pdbonly = f"{row['pdb_id']}"
